@@ -1,0 +1,151 @@
+name: Dump OrangeFox source (fox_12.1) for haptic patch
+
+# Tidak build apa pun. Hanya sync source fox_12.1 (cara yang sama dengan OrengeFox.yml) lalu mengupload
+# file teks yang dibutuhkan untuk menulis patch "Haptic feedback" sebagai artifact.
+# Waktu jalan normal ~10 menit.
+
+on:
+  workflow_dispatch:
+    inputs:
+      SYNC_URL:
+        description: 'SYNC_URL Orangefox'
+        required: true
+        default: 'https://gitlab.com/OrangeFox/sync.git'
+      DEVICE_TREE_URL:
+        description: 'DEVICE_TREE_URL'
+        required: true
+        default: 'https://github.com/Ctapchuk/android_device_xiaomi_marble-OFRP'
+      DEVICE_TREE_BRANCH:
+        description: 'DEVICE_TREE_BRANCH'
+        required: true
+        default: 'fox_12.1'
+      DEVICE_PATH:
+        description: 'DEVICE_PATH'
+        required: true
+        default: 'device/xiaomi/marble'
+
+jobs:
+  dump:
+    if: github.event.repository.owner.id == github.event.sender.id
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+    - name: Free disk space (pre-cleanup)
+      uses: jlumbroso/free-disk-space@cf1e78c50ca91e757bab3edc229027eebfc07871 # main
+      with:
+        preinstalled-runtimes: true
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: true
+        docker-images: true
+        swap-storage: true
+
+    - name: Initialize workspace
+      id: pwd
+      run: |
+        mkdir workspace
+        cd workspace
+        echo "workspace-folder=$(pwd)" >> "$GITHUB_OUTPUT"
+
+    - name: Prepare the sync environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo -E apt-get update
+        sudo -E apt-get install -yq git python3 tar aria2
+        git clone https://gitlab.com/OrangeFox/misc/scripts.git
+        cd scripts
+        sudo bash setup/android_build_env.sh
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Sync OrangeFox sources (fox_12.1)
+      env:
+        SYNC_URL: ${{ github.event.inputs.SYNC_URL }}
+      run: |
+        WS=${{ steps.pwd.outputs.workspace-folder }}
+        git clone "$SYNC_URL" sync
+        cd sync
+        echo "SYNC_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+        TARGET="$WS/fox_12.1"
+        success=0
+        for attempt in 1 2 3 4 5; do
+          echo "== Sync attempt $attempt/5 =="
+          ./orangefox_sync.sh --branch 12.1 --path "$TARGET" 2>&1 | tee -a "$WS/sync.log" || true
+          if [ -f "$TARGET/build/envsetup.sh" ]; then success=1; break; fi
+          echo "Sync attempt $attempt gagal, retry in 30s..."
+          sleep 30
+        done
+        if [ "$success" -ne 1 ]; then
+          echo "::error::Semua percobaan sync gagal -- $TARGET/build/envsetup.sh tidak pernah ada."
+          exit 1
+        fi
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Clone device tree
+      env:
+        DEVICE_TREE_URL: ${{ github.event.inputs.DEVICE_TREE_URL }}
+        DEVICE_TREE_BRANCH: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}
+        DEVICE_PATH: ${{ github.event.inputs.DEVICE_PATH }}
+      run: |
+        cd ${{ steps.pwd.outputs.workspace-folder }}/fox_12.1
+        git clone --depth=1 "$DEVICE_TREE_URL" -b "$DEVICE_TREE_BRANCH" "./$DEVICE_PATH"
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Collect source files
+      env:
+        DEVICE_PATH: ${{ github.event.inputs.DEVICE_PATH }}
+      run: |
+        WS=${{ steps.pwd.outputs.workspace-folder }}
+        TREE="$WS/fox_12.1"
+        OUT="$WS/dump"
+        mkdir -p "$OUT"
+        cd "$TREE"
+
+        # 1) Seluruh file teks bootable/recovery (kode, makefile, theme XML, string bahasa).
+        #    Gambar, font, dan binary prebuilt tidak ikut supaya artifact tetap kecil.
+        find bootable/recovery -path '*/.git' -prune -o -type f -size -2048k \( \
+            -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \
+            -o -name '*.mk' -o -name '*.bp' -o -name 'Android.mk' -o -name '*.xml' -o -name '*.sh' \
+            -o -name '*.rc' -o -name '*.txt' -o -name '*.prop' -o -name '*.aidl' -o -name '*.py' \) -print \
+          > "$OUT/recovery-files.txt"
+        tar -czf "$OUT/bootable_recovery.tar.gz" -T "$OUT/recovery-files.txt"
+
+        # 2) Definisi AIDL/HIDL vibrator (untuk tahu versi API dan nama library di Android 12.1).
+        tar -czf "$OUT/vibrator_interfaces.tar.gz" \
+          $(find hardware/interfaces/vibrator -type f \( -name '*.aidl' -o -name '*.bp' -o -name '*.hal' -o -name '*.json' \) 2>/dev/null) \
+          2>/dev/null || echo "hardware/interfaces/vibrator tidak lengkap"
+
+        # 3) Device tree yang dipakai build (BoardConfig, init, vintf, daftar file vibrator).
+        tar -czf "$OUT/device_tree.tar.gz" --exclude='.git' \
+          $(cd "$TREE" && find "$DEVICE_PATH" -path '*/.git' -prune -o -type f -size -1024k \( \
+              -name '*.mk' -o -name '*.bp' -o -name '*.rc' -o -name '*.xml' -o -name '*.prop' -o -name '*.txt' \) -print)
+
+        # 4) Info versi & inventaris file vibrator di seluruh tree.
+        {
+          echo "sync commit      : $SYNC_COMMIT"
+          echo "bootable/recovery: $(git -C bootable/recovery log -1 --format='%H %cI %s' 2>/dev/null)"
+          echo "device tree      : $(git -C "$DEVICE_PATH" log -1 --format='%H %cI %s' 2>/dev/null)"
+          echo "platform version : $(grep -m1 'PLATFORM_VERSION_LAST_STABLE' build/make/core/version_defaults.mk 2>/dev/null)"
+          echo
+          echo "== vibrator paths (tanpa out/ dan .repo/) =="
+          find . -maxdepth 10 \( -path ./out -o -path ./.repo -o -path ./prebuilts \) -prune -o -ipath '*vibrator*' -print 2>/dev/null | sort
+          echo
+          echo "== modul vibrator yang didefinisikan di Android.bp =="
+          grep -rl --include=Android.bp -E 'name: *"android\.hardware\.vibrator' hardware frameworks 2>/dev/null | sort
+        } > "$OUT/info.txt"
+
+        cp "$WS/sync.log" "$OUT/" 2>/dev/null || true
+        echo "== isi dump =="
+        ls -la "$OUT"
+        cat "$OUT/info.txt" | head -40
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Upload dump
+      uses: actions/upload-artifact@v7
+      with:
+        name: fox_12.1-source-dump-${{ github.run_id }}
+        path: ${{ steps.pwd.outputs.workspace-folder }}/dump
+        retention-days: 7
