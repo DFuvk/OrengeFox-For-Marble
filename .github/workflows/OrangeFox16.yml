@@ -1,0 +1,449 @@
+name: Recovery OFOX Build (fox_16.0, test) — marble
+
+on:
+  workflow_dispatch:
+    inputs:
+      SYNC_URL:
+        description: 'SYNC_URL Orangefox'
+        required: true
+        default: 'https://gitlab.com/OrangeFox/sync.git'
+      DEVICE_TREE_URL:
+        description: 'DEVICE_TREE_URL'
+        required: true
+        default: 'https://github.com/Ctapchuk/android_device_xiaomi_marble-OFRP'
+      DEVICE_TREE_BRANCH:
+        description: 'DEVICE_TREE_BRANCH (fox_16.0, atau fox_16.0_dev untuk WLAN)'
+        required: true
+        default: 'fox_16.0'
+      DEVICE_PATH:
+        description: 'DEVICE_PATH'
+        required: true
+        default: 'device/xiaomi/marble'
+      COMMON_TREE_URL:
+        description: 'COMMON_TREE_URL'
+        required: false
+      COMMON_PATH:
+        description: 'COMMON_PATH'
+        required: false
+      COMMON_TREE_BRANCH:
+        description: 'COMMON_TREE_BRANCH'
+        required: false
+      DEVICE_NAME:
+        description: 'DEVICE_NAME'
+        required: true
+        default: 'marble'
+      MAKEFILE_NAME:
+        description: 'MAKEFILE_NAME'
+        required: true
+        default: 'twrp_marble'
+      BUILD_TARGET:
+        description: 'BUILD_TARGET'
+        required: true
+        default: 'recovery'
+      OF_MAINTAINER:
+        description: 'OF_MAINTAINER'
+        required: true
+        default: 'Yudharn'
+      FOX_MAINTAINER_PATCH_VERSION:
+        description: 'FOX_MAINTAINER_PATCH_VERSION'
+        required: true
+        default: '1'
+      RELEASE_CONFIG:
+        description: 'Release config untuk lunch Android 16 (twrp_marble-<ini>-eng), lihat COMMON_LUNCH_CHOICES device tree'
+        required: true
+        default: 'bp2a'
+
+jobs:
+  build:
+    if: github.event.repository.owner.id == github.event.sender.id
+    runs-on: ubuntu-24.04
+    # Build normal ~1 jam (sync ~8 mnt + build ~40 mnt). Batas ini mencegah job macet menghabiskan 6 jam menit Actions.
+    timeout-minutes: 240
+    permissions:
+      contents: write
+    steps:
+
+    # Tidak ada input workflow yang di-interpolasi langsung ke script `run:`. Semua lewat `env:` pada step
+    # yang membutuhkannya, lalu dipakai sebagai "$VAR" (mencegah shell/expression injection).
+    - name: Check Out
+      uses: actions/checkout@v7
+      with:
+        persist-credentials: false
+
+    # Third-party actions di-pin ke SHA (bukan @main/@master/tag) karena job ini punya token contents:write.
+    # SHA di bawah = versi yang jalan di build sukses 2026-10-12. Dependabot (github-actions) akan menaikkannya.
+    - name: Free disk space (pre-cleanup)
+      uses: jlumbroso/free-disk-space@cf1e78c50ca91e757bab3edc229027eebfc07871 # main
+      with:
+        preinstalled-runtimes: true
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: true
+        docker-images: true
+        swap-storage: true
+
+    # Cleanup The Actions Workspace Using Custom Composite Run Actions
+    - name: Cleanup
+      uses: rokibhasansagar/slimhub_actions@c2a6e4317d3de2b623ac7395b05e9d2149e8289b # main
+
+    - name: Disk space check (setelah cleanup)
+      run: |
+        echo "== df -h setelah free-disk-space + slimhub =="
+        df -h
+
+    - name: Initialize workspace
+      run: |
+        mkdir workspace
+        cd workspace
+        echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
+      id: pwd
+
+    - name: Prepare the build environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        # apt-get (bukan apt) supaya tidak muncul "WARNING: apt does not have a stable CLI interface"
+        # Tidak ada "apt-get upgrade": tidak dibutuhkan build, makan waktu, dan ikut memasang kernel/systemd baru
+        # yang tidak akan dipakai runner ini (kernel aktif tidak berganti tanpa reboot).
+        sudo -E apt-get update
+        sudo -E apt-get install -yq git python3 tar aria2
+
+        # linux-modules-extra-<kernel> hanya dipakai untuk modul zram. Paket untuk kernel image runner sering
+        # sudah dihapus dari arsip Ubuntu (build 2026-11-22: kernel 7.0.0-1017-azure -> "Unable to locate package"
+        # -> exit 100). Jadi opsional: kalau tidak ada, lanjut saja; langkah zram di bawah akan dilewati sendiri.
+        KMOD_PKG="linux-modules-extra-$(uname -r)"
+        if apt-cache show "$KMOD_PKG" >/dev/null 2>&1; then
+          sudo -E apt-get install -yq "$KMOD_PKG" || echo "::notice::$KMOD_PKG gagal dipasang -- zram mungkin tidak tersedia"
+        else
+          echo "::notice::$KMOD_PKG tidak ada di repo apt (kernel runner $(uname -r)) -- dilewati, zram mungkin tidak tersedia"
+        fi
+
+        git clone https://gitlab.com/OrangeFox/misc/scripts.git
+        cd scripts
+        sudo bash setup/android_build_env.sh
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Setup SSH Keys
+      if: ${{ startsWith(github.event.inputs.SYNC_URL, 'git@') ||
+          startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@') ||
+          startsWith(github.event.inputs.COMMON_TREE_URL, 'git@') }}
+      uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555 # v0.10.0
+      with:
+          ssh-private-key: |
+            ${{ secrets.SSH_PRIVATE_KEY }}
+
+    - name: Sync OrangeFox sources and minimal manifest
+      id: sync
+      env:
+        SYNC_URL: ${{ github.event.inputs.SYNC_URL }}
+      run: |
+        cd ${{ steps.pwd.outputs.workspace-folder }}
+        git clone "$SYNC_URL" sync
+        cd sync
+        SYNC_COMMIT=$(git rev-parse HEAD)
+        SYNC_COMMIT_DATE=$(git log -1 --format=%cI)
+        SYNC_COMMIT_MSG=$(git log -1 --format=%s)
+        echo "sync-commit=$SYNC_COMMIT" >> $GITHUB_OUTPUT
+        echo "sync-commit-short=${SYNC_COMMIT:0:8}" >> $GITHUB_OUTPUT
+        echo "== Commit repo sync yang dipakai build ini: $SYNC_COMMIT ($SYNC_COMMIT_DATE) =="
+        echo "== Pesan commit: $SYNC_COMMIT_MSG =="
+        echo "== Riwayat lengkap: https://gitlab.com/OrangeFox/sync/-/commits/master =="
+        TARGET=${{ steps.pwd.outputs.workspace-folder }}/fox_16.0
+        SYNC_LOG=${{ steps.pwd.outputs.workspace-folder }}/sync.log
+        : > "$SYNC_LOG"
+        success=0
+        for attempt in 1 2 3 4 5; do
+          echo "== Sync attempt $attempt/5 =="
+          ./orangefox_sync.sh --branch 16.0 --path "$TARGET" 2>&1 | tee -a "$SYNC_LOG" || true
+          if [ -f "$TARGET/build/envsetup.sh" ]; then
+            success=1
+            break
+          fi
+          echo "Sync attempt $attempt tidak menghasilkan manifest yang valid (build/envsetup.sh tidak ada). Retry in 30s..."
+          sleep 30
+        done
+        if [ "$success" -ne 1 ]; then
+          echo "::error::Semua percobaan sync gagal -- $TARGET/build/envsetup.sh tidak pernah ada."
+          exit 1
+        fi
+        if grep -q 'Failed to patch' "$SYNC_LOG"; then
+          echo "::warning::orangefox_sync.sh melaporkan patch gagal: $(grep -m1 -E 'Failed to patch' "$SYNC_LOG")"
+        fi
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Check disk & memory after sync
+      if: always()
+      run: |
+        echo "== Disk =="
+        df -h
+        echo "== Memory =="
+        free -h
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    # Kredit "By <OF_MAINTAINER>" di banner "Welcome to OrangeFox Recovery!" (TWFunc::Welcome_Message di
+    # bootable/recovery/twrp-functions.cpp). Tidak ada flag build untuk ini, jadi source dipatch.
+    # Teks ditulis langsung (bukan macro OF_MAINTAINER) karena twrp-functions.cpp juga dikompilasi oleh
+    # twrpTarMain/Android.mk yang tidak membawa -DOF_MAINTAINER.
+    # Idempotent (pakai penanda /* ofox-credit */) dan tidak menggagalkan build kalau layout source berubah.
+    - name: Add maintainer credit to welcome banner
+      env:
+        OF_MAINTAINER: ${{ github.event.inputs.OF_MAINTAINER }}
+      run: |
+        F=${{ steps.pwd.outputs.workspace-folder }}/fox_16.0/bootable/recovery/twrp-functions.cpp
+        CREDIT="By ${OF_MAINTAINER}"
+        MARK='/* ofox-credit */'
+        if [ ! -f "$F" ]; then
+          echo "::warning::$F tidak ada -- kredit dilewati"; exit 0
+        fi
+        # Hanya karakter aman supaya tidak merusak string C / perintah awk.
+        if ! printf '%s' "$OF_MAINTAINER" | grep -qE '^[A-Za-z0-9 ._@-]+$'; then
+          echo "::warning::OF_MAINTAINER kosong atau berisi karakter yang tidak didukung -- kredit dilewati"; exit 0
+        fi
+        if grep -qF "$MARK" "$F"; then
+          echo "Kredit sudah ada -- lewati"; exit 0
+        fi
+        N=$(grep -n 'Welcome to OrangeFox Recovery' "$F" | head -n1 | cut -d: -f1)
+        if [ -z "$N" ]; then
+          echo "::warning::baris 'Welcome to OrangeFox Recovery' tidak ketemu di $F -- kredit dilewati"; exit 0
+        fi
+        LINE=$(sed -n "${N}p" "$F")
+        if ! printf '%s' "$LINE" | grep -qE ';[[:space:]]*$'; then
+          echo "::warning::baris Welcome bukan statement 1 baris -- kredit dilewati"; exit 0
+        fi
+        INDENT=$(printf '%s' "$LINE" | sed -E 's/^([[:space:]]*).*/\1/')
+        awk -v n="$N" -v ins="${INDENT}gui_print_color(\"green\", \"${CREDIT}\\\\n\"); ${MARK}" \
+          'NR==n{print; print ins; next} 1' "$F" > "$F.tmp" && mv "$F.tmp" "$F"
+        echo "== Kredit ditambahkan =="
+        grep -n -B1 -A1 -F "$MARK" "$F"
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    # Foto profil maintainer di halaman About. Ukuran mengikuti theme: fox_16.0 memakai 195x195 (assets/maintainer_195.png),
+    # fox_12.1 memakai 192x192 (assets/maintainer.png). Bentuk bulat berasal dari "card" yang digambar di atasnya.
+    - name: Set maintainer avatar (About page)
+      run: |
+        DST=${{ steps.pwd.outputs.workspace-folder }}/fox_16.0/bootable/recovery/gui/theme/portrait_hdpi/images/Default/About/maintainer.png
+        if [ ! -f "$DST" ]; then
+          echo "::warning::$DST tidak ada (layout theme berubah?) -- avatar tidak diganti"; exit 0
+        fi
+        WANT=$(file -b "$DST" | grep -oE '[0-9]+ x [0-9]+' | head -n1)
+        echo "Ukuran avatar di theme: ${WANT:-tidak diketahui}"
+        SRC=""
+        for C in "$GITHUB_WORKSPACE/assets/maintainer_195.png" "$GITHUB_WORKSPACE/assets/maintainer.png"; do
+          if [ -f "$C" ] && [ -n "$WANT" ] && file -b "$C" | grep -q "PNG image data, $WANT"; then SRC="$C"; break; fi
+        done
+        if [ -z "$SRC" ]; then
+          echo "::warning::tidak ada assets/maintainer*.png berukuran $WANT -- avatar bawaan dipakai"; exit 0
+        fi
+        cp -f "$SRC" "$DST"
+        echo "== Avatar maintainer diganti ($(basename "$SRC")) =="
+        file "$DST"
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Clone device tree
+      env:
+        DEVICE_TREE_URL: ${{ github.event.inputs.DEVICE_TREE_URL }}
+        DEVICE_TREE_BRANCH: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}
+        DEVICE_PATH: ${{ github.event.inputs.DEVICE_PATH }}
+      run: |
+        cd ${{ steps.pwd.outputs.workspace-folder }}/fox_16.0
+        git clone "$DEVICE_TREE_URL" -b "$DEVICE_TREE_BRANCH" "./$DEVICE_PATH"
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Clone common tree
+      if: |
+        github.event.inputs.COMMON_TREE_URL != ''
+        && github.event.inputs.COMMON_PATH != ''
+      env:
+        COMMON_TREE_URL: ${{ github.event.inputs.COMMON_TREE_URL }}
+        COMMON_PATH: ${{ github.event.inputs.COMMON_PATH }}
+        COMMON_TREE_BRANCH: ${{ github.event.inputs.COMMON_TREE_BRANCH }}
+      run: |
+        cd ${{ steps.pwd.outputs.workspace-folder }}/fox_16.0
+        if [ -n "$COMMON_TREE_BRANCH" ]; then
+          git clone "$COMMON_TREE_URL" -b "$COMMON_TREE_BRANCH" "./$COMMON_PATH"
+        else
+          git clone "$COMMON_TREE_URL" "./$COMMON_PATH"
+        fi
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Set Swap Space
+      uses: pierotofy/set-swap-space@fc79b3f67fa8a838184ce84a674ca12238d2c761 # master
+      with:
+        swap-size-gb: 12
+
+    - name: Enable zram swap
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        # zram opsional: kalau modul kernel zram tidak ada (lihat langkah "Prepare the build environment"),
+        # build tetap jalan memakai swapfile 12 GB dari langkah sebelumnya.
+        if sudo modprobe zram 2>/dev/null; then
+          sudo -E apt-get install -yq zram-tools
+          echo -e 'ALGO=lz4\nPERCENT=50\nPRIORITY=100' | sudo tee /etc/default/zramswap
+          sudo systemctl restart zramswap.service \
+            || echo "::notice::zramswap.service gagal start -- lanjut dengan swapfile saja"
+        else
+          echo "::notice::modul zram tidak tersedia di kernel $(uname -r) -- zram dilewati, pakai swapfile saja"
+        fi
+        echo "== swap layout =="
+        swapon --show
+        free -h
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Disk space check (sebelum build)
+      run: |
+        echo "== df -h =="
+        df -h
+        echo "== 20 folder terbesar di source tree =="
+        du -sh ${{ steps.pwd.outputs.workspace-folder }}/fox_16.0/* 2>/dev/null | sort -rh | head -20
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    # Info untuk port menu Haptic feedback ke fox_16.0: apakah source publik sudah punya kode haptic/WiFi ctapchuk,
+    # dan dump file teks bootable/recovery + vibrator HAL sebagai artifact (tidak ikut release). Tidak memengaruhi build.
+    - name: Inspect & dump fox_16.0 recovery source
+      if: always()
+      env:
+        DEVICE_PATH: ${{ github.event.inputs.DEVICE_PATH }}
+      run: |
+        TREE=${{ steps.pwd.outputs.workspace-folder }}/fox_16.0
+        OUT=${{ steps.pwd.outputs.workspace-folder }}/dump16
+        mkdir -p "$OUT"
+        [ -d "$TREE/bootable/recovery" ] || { echo "::warning::source belum ada -- lewati"; exit 0; }
+        cd "$TREE"
+        {
+          echo "bootable/recovery: $(git -C bootable/recovery log -1 --format='%H %cI %s' 2>/dev/null)"
+          echo "device tree      : $(git -C "$DEVICE_PATH" log -1 --format='%H %cI %s' 2>/dev/null)"
+          echo
+          echo "== kode haptic (HapticController / of_use_haptic_effects / do_compose_haptic):"
+          grep -rln --include=*.cpp --include=*.h --include=*.hpp --include=*.xml --include=*.bp --include=*.mk \
+            -E 'HapticController|of_use_haptic_effects|do_compose_haptic' bootable/recovery 2>/dev/null || echo "  (tidak ada)"
+          echo
+          echo "== kode WiFi (OF_ENABLE_WLAN / wlan):"
+          grep -rln --include=*.cpp --include=*.mk --include=*.bp --include=*.xml -E 'OF_ENABLE_WLAN' bootable/recovery 2>/dev/null || echo "  (tidak ada)"
+          echo
+          echo "== vibrator di tree:"
+          find . -maxdepth 6 \( -path ./out -o -path ./.repo -o -path ./prebuilts \) -prune -o -ipath '*vibrator*' -type d -print 2>/dev/null | sort | head -40
+        } | tee "$OUT/info16.txt"
+        find bootable/recovery -path '*/.git' -prune -o -type f -size -2048k \( \
+            -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' -o -name '*.mk' -o -name '*.bp' \
+            -o -name '*.go' -o -name 'Android.mk' -o -name '*.xml' -o -name '*.sh' -o -name '*.rc' -o -name '*.txt' -o -name '*.aidl' \) -print \
+          > "$OUT/recovery-files.txt"
+        tar -czf "$OUT/bootable_recovery16.tar.gz" -T "$OUT/recovery-files.txt"
+        tar -czf "$OUT/device_tree16.tar.gz" --exclude=.git "$DEVICE_PATH" 2>/dev/null || true
+        ls -la "$OUT"
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Upload fox_16.0 source dump
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: fox_16.0-source-dump-${{ github.run_id }}
+        path: ${{ steps.pwd.outputs.workspace-folder }}/dump16
+        if-no-files-found: ignore
+        retention-days: 7
+
+    - name: Building recovery
+      env:
+        IN_MAKEFILE_NAME: ${{ github.event.inputs.MAKEFILE_NAME }}
+        IN_BUILD_TARGET: ${{ github.event.inputs.BUILD_TARGET }}
+        IN_RELEASE_CONFIG: ${{ github.event.inputs.RELEASE_CONFIG }}
+        OF_MAINTAINER: ${{ github.event.inputs.OF_MAINTAINER }}
+        FOX_MAINTAINER_PATCH_VERSION: ${{ github.event.inputs.FOX_MAINTAINER_PATCH_VERSION }}
+      run: |
+        cd ${{ steps.pwd.outputs.workspace-folder }}/fox_16.0
+        set +e
+        source build/envsetup.sh
+        export ALLOW_MISSING_DEPENDENCIES=true
+        export LC_ALL="C"
+        # OF_MAINTAINER dan FOX_MAINTAINER_PATCH_VERSION sudah di-export lewat env: step ini.
+        export OF_SCREEN_H=2400
+
+        PRODUCT="$IN_MAKEFILE_NAME"
+        VARIANT="eng"
+
+        RELEASE="$IN_RELEASE_CONFIG"
+        echo "== lunch ${PRODUCT}-${RELEASE}-${VARIANT} =="
+        if ! lunch "${PRODUCT}-${RELEASE}-${VARIANT}"; then
+          echo "::error::lunch ${PRODUCT}-${RELEASE}-${VARIANT} gagal. Android 16 memakai format lunch 3-bagian -- cek COMMON_LUNCH_CHOICES di AndroidProducts.mk device tree (fox_16.0: twrp_marble-bp2a-eng)."
+          exit 1
+        fi
+
+        set -e
+        set -o pipefail
+        # Tidak perlu "make clean": runner baru, folder out/ belum ada. Android 16 memakai JDK bawaan prebuilts/jdk.
+        mka adbd "${IN_BUILD_TARGET}image" -j$(nproc --all) 2>&1 | tee ${{ steps.pwd.outputs.workspace-folder }}/build.log
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Upload build log (jika build gagal)
+      if: failure()
+      uses: actions/upload-artifact@v7
+      with:
+        name: build-log-${{ github.run_id }}
+        # sync.log ikut diupload supaya kegagalan di tahap sync juga punya log; file yang belum ada diabaikan.
+        path: |
+          ${{ steps.pwd.outputs.workspace-folder }}/build.log
+          ${{ steps.pwd.outputs.workspace-folder }}/sync.log
+        if-no-files-found: ignore
+        retention-days: 7
+
+    - name: Verify build artifacts
+      id: verify
+      env:
+        IN_DEVICE_NAME: ${{ github.event.inputs.DEVICE_NAME }}
+      run: |
+        BUILD_LOG="${{ steps.pwd.outputs.workspace-folder }}/build.log"
+        PRODUCT_OUT="${{ steps.pwd.outputs.workspace-folder }}/fox_16.0/out/target/product/$IN_DEVICE_NAME"
+
+        # Release hanya berisi file .zip OrangeFox. File .img tetap dibuild tapi tidak diupload.
+        ZIP_PATH=$(grep -m1 '^Recovery zip:' "$BUILD_LOG" | sed 's/^Recovery zip:[[:space:]]*//')
+
+        # Catatan: setelah lunch, OUT_DIR berubah ke $PRODUCT_OUT, jadi hasil build ada di
+        # $PRODUCT_OUT/target/product/<device>/ (path ganda). Fallback find di bawah menutupi ini.
+        if [ -z "$ZIP_PATH" ] || [ ! -f "$ZIP_PATH" ]; then
+          ZIP_PATH=$(find "$PRODUCT_OUT" -type f -iname 'OrangeFox-*.zip' 2>/dev/null | head -n1)
+        fi
+
+        echo "zip: ${ZIP_PATH:-<tidak ditemukan>}"
+
+        if [ -z "$ZIP_PATH" ] || [ ! -f "$ZIP_PATH" ]; then
+          echo "::error::Tidak bisa menemukan file .zip OrangeFox yang valid (lewat build.log maupun pencarian rekursif di $PRODUCT_OUT)."
+          echo "== Struktur $PRODUCT_OUT sampai 3 level (untuk debug) =="
+          find "$PRODUCT_OUT" -maxdepth 3 2>/dev/null
+          exit 1
+        fi
+
+        echo "zip-path=$ZIP_PATH" >> "$GITHUB_OUTPUT"
+        # Versi untuk judul release, diambil dari nama zip (mis. OrangeFox-R12.0_5-Unofficial-marble.zip -> R12.0_5).
+        FOX_VER=$(basename "$ZIP_PATH" | sed -nE 's/^OrangeFox-(R[^-]+)-.*/\1/p')
+        echo "fox-version=${FOX_VER:-R12}" >> "$GITHUB_OUTPUT"
+
+    - name: Upload to Release
+      uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
+      with:
+        files: ${{ steps.verify.outputs.zip-path }}
+        name: OrangeFox ${{ steps.verify.outputs.fox-version }} - ${{ github.event.inputs.DEVICE_NAME }} (fox_16.0 test)
+        tag_name: ${{ github.run_id }}
+        prerelease: true
+        make_latest: false
+        fail_on_unmatched_files: true
+        body: |
+          OrangeFox ${{ steps.verify.outputs.fox-version }} (unofficial, test build) for POCO F5 / Redmi Note 12 Turbo (${{ github.event.inputs.DEVICE_NAME }}).
+
+          **Install**
+          Flash the zip from OrangeFox or TWRP. Make a backup first.
+
+          **Notes**
+          - Based on fox_16.0 (new R12 interface). Test build, not as well tested as the fox_12.1 releases.
+          - Uses the open source qcom vibrator HAL from the device tree.
+          - No kernel included, it uses the one from your current ROM (HyperOS or GKI custom ROMs).
+          - This is an unofficial build. Please don't report issues to the OrangeFox team.
+
+          **Source**
+          - Device tree: ${{ github.event.inputs.DEVICE_TREE_URL }} (`${{ github.event.inputs.DEVICE_TREE_BRANCH }}`)
+          - OrangeFox sync: [`${{ steps.sync.outputs.sync-commit-short }}`](https://gitlab.com/OrangeFox/sync/-/commit/${{ steps.sync.outputs.sync-commit }})
+
+          Maintained by ${{ github.event.inputs.OF_MAINTAINER }}.
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
