@@ -365,6 +365,44 @@ jobs:
         fi
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
+    # Waveform efek Xiaomi untuk HAL qcom (seperti build OrangeFox fox_16.0 ctapchuk): aktifkan USE_EFFECT_STREAM dan
+    # ganti effect.cpp dengan pembaca /vendor/etc/vibrator/effect_<id>.bin (file .bin dibawa patch device tree).
+    # Sumber pengganti: patches/vendor_qcom_vibrator/effect.cpp. Hanya dipasang kalau layout source sesuai.
+    - name: Apply qcom vibrator effect stream (haptic HAL)
+      id: haptic_fx
+      if: ${{ inputs.HAPTIC_FEEDBACK }}
+      run: |
+        V=${{ steps.pwd.outputs.workspace-folder }}/fox_12.1/vendor/qcom/opensource/vibrator
+        SRC="$GITHUB_WORKSPACE/patches/vendor_qcom_vibrator/effect.cpp"
+        if [ ! -f "$SRC" ]; then
+          echo "::warning::patches/vendor_qcom_vibrator/effect.cpp tidak ada -- efek pakai bawaan driver"; exit 0
+        fi
+        if [ ! -f "$V/effect/effect.h" ] || [ ! -f "$V/aidl/Vibrator.cpp" ] || [ ! -f "$V/aidl/Android.bp" ]; then
+          echo "::warning::$V tidak lengkap -- effect stream dilewati"; exit 0
+        fi
+        # struct effect_stream harus {effect_id, length, play_rate_hz, const int8_t *data} dan HAL harus punya jalur USE_EFFECT_STREAM
+        if ! grep -qE 'const int8_t[[:space:]]*\*[[:space:]]*data;' "$V/effect/effect.h" \
+           || ! grep -q 'play_rate_hz' "$V/effect/effect.h" \
+           || ! grep -q 'USE_EFFECT_STREAM' "$V/aidl/Vibrator.cpp"; then
+          echo "::warning::layout vendor/qcom/opensource/vibrator berbeda dari perkiraan -- effect stream dilewati"; exit 0
+        fi
+        cp -f "$SRC" "$V/effect/effect.cpp"
+        if ! grep -q 'DUSE_EFFECT_STREAM' "$V/aidl/Android.bp"; then
+          if grep -q '^Common_CFlags += \["-Werror"\]' "$V/aidl/Android.bp"; then
+            sed -i '0,/^Common_CFlags += \["-Werror"\]/s//&\nCommon_CFlags += ["-DUSE_EFFECT_STREAM"] \/\/ [ofox-haptics]/' "$V/aidl/Android.bp"
+          else
+            sed -i '0,/^Common_CFlags = .*/s//&\nCommon_CFlags += ["-DUSE_EFFECT_STREAM"] \/\/ [ofox-haptics]/' "$V/aidl/Android.bp"
+          fi
+        fi
+        if grep -q 'DUSE_EFFECT_STREAM' "$V/aidl/Android.bp"; then
+          echo "== effect stream aktif =="
+          grep -n 'Common_CFlags' "$V/aidl/Android.bp"
+          echo "applied=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning::gagal menambah -DUSE_EFFECT_STREAM ke $V/aidl/Android.bp"
+        fi
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
     - name: Clone common tree
       if: |
         github.event.inputs.COMMON_TREE_URL != ''
