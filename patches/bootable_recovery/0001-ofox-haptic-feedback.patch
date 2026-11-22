@@ -729,10 +729,52 @@ index 7dcffc2..949359a 100644
  		<variable name="ab_bc_search_y" value="128+%cutout_w%"/>
  		<variable name="ab_bc2_y" value="282+%cutout_w%"/>
 diff --git a/minuitwrp/events.cpp b/minuitwrp/events.cpp
-index e497df6..e7d14af 100644
+index e497df6..0a4116d 100644
 --- a/minuitwrp/events.cpp
 +++ b/minuitwrp/events.cpp
-@@ -193,6 +193,175 @@ int vibrate(int timeout_ms)
+@@ -38,6 +38,7 @@
+ #ifdef USE_QTI_AIDL_HAPTICS
+ #include <aidl/android/hardware/vibrator/IVibrator.h>
+ #include <android/binder_manager.h>
++#include <atomic> // [ofox-haptics]
+ using ::aidl::android::hardware::vibrator::IVibrator;
+ #ifdef USE_QTI_AIDL_HAPTICS_FQNAME
+ static const std::string kVibratorInstance = std::string("android.hardware.vibrator.") + USE_QTI_AIDL_HAPTICS_FQNAME;
+@@ -47,6 +48,24 @@ static const std::string kVibratorInstance = std::string(IVibrator::descriptor)
+ #ifdef USE_QTI_AIDL_HAPTICS_FIX_OFF
+ static std::atomic_int vib_on_count = 0;
+ #endif
++
++// [ofox-haptics] Pilih instance HAL saat runtime: utamakan IVibrator/default (HAL qcom, punya efek),
++// kalau belum/tidak jalan pakai instance dari TW_SUPPORT_INPUT_AIDL_HAPTICS_FQNAME seperti sebelumnya.
++// AServiceManager_checkService tidak memblok, jadi tidak membuat tombol terasa macet.
++static std::string haptic_pick_instance() {
++    static const std::string kDefault = std::string(IVibrator::descriptor) + "/default";
++    static std::atomic_bool default_found = false;
++    if (default_found) return kDefault;
++    if (kDefault != kVibratorInstance) {
++        ndk::SpAIBinder b(AServiceManager_checkService(kDefault.c_str()));
++        if (b.get() != nullptr) {
++            default_found = true;
++            printf("I:[ofox-haptics] pakai HAL %s\n", kDefault.c_str());
++            return kDefault;
++        }
++    }
++    return kVibratorInstance;
++}
+ #endif
+ 
+ #include "common.h"
+@@ -159,7 +178,7 @@ int vibrate(int timeout_ms)
+         vib->on((uint32_t)timeout_ms);
+     }
+ #elif defined(USE_QTI_AIDL_HAPTICS)
+-    std::shared_ptr<IVibrator> vib = IVibrator::fromBinder(ndk::SpAIBinder(AServiceManager_getService(kVibratorInstance.c_str())));
++    std::shared_ptr<IVibrator> vib = IVibrator::fromBinder(ndk::SpAIBinder(AServiceManager_getService(haptic_pick_instance().c_str()))); // [ofox-haptics]
+     if (vib != nullptr) {
+ #ifdef USE_QTI_AIDL_HAPTICS_FIX_OFF
+         std::thread([vib, timeout_ms] {
+@@ -193,6 +212,179 @@ int vibrate(int timeout_ms)
  #endif
  #endif
  
@@ -751,6 +793,7 @@ index e497df6..e7d14af 100644
 +
 +static std::mutex haptic_lock;
 +static std::shared_ptr<IVibrator> haptic_vib;
++static std::string haptic_vib_name;
 +static int haptic_state = -1;  // -1 belum dicek, 0 tidak didukung, 1 didukung
 +static int32_t haptic_caps = 0;
 +static std::vector<Effect> haptic_effects;
@@ -758,22 +801,25 @@ index e497df6..e7d14af 100644
 +
 +// Panggil dengan haptic_lock terkunci. Tidak memblok: kalau HAL belum terdaftar, kembali nullptr.
 +static std::shared_ptr<IVibrator> haptic_get_vib_locked() {
++    const std::string name = haptic_pick_instance();
 +    if (haptic_vib != nullptr) {
-+        if (AIBinder_isAlive(haptic_vib->asBinder().get())) return haptic_vib;
-+        haptic_vib = nullptr;  // HAL restart: cek ulang kemampuannya
++        // HAL restart, atau HAL qcom baru muncul setelah HAL lain: cek ulang kemampuannya
++        if (name == haptic_vib_name && AIBinder_isAlive(haptic_vib->asBinder().get())) return haptic_vib;
++        haptic_vib = nullptr;
 +        haptic_state = -1;
 +    }
-+    ndk::SpAIBinder binder(AServiceManager_checkService(kVibratorInstance.c_str()));
++    ndk::SpAIBinder binder(AServiceManager_checkService(name.c_str()));
 +    if (binder.get() == nullptr) return nullptr;
 +    haptic_vib = IVibrator::fromBinder(binder);
++    haptic_vib_name = name;
 +    return haptic_vib;
 +}
 +
 +static void haptic_probe_locked() {
-+    if (haptic_state != -1 && haptic_vib != nullptr) return;
++    // haptic_get_vib_locked() me-reset haptic_state kalau HAL berganti/restart
 +    std::shared_ptr<IVibrator> vib = haptic_get_vib_locked();
 +    if (vib == nullptr) return;  // HAL belum jalan, dicoba lagi di panggilan berikutnya
-+    if (haptic_state != -1) return;
++    if (haptic_state != -1) return;  // HAL ini sudah dicek
 +
 +    int32_t caps = 0;
 +    if (!vib->getCapabilities(&caps).isOk()) caps = 0;
@@ -792,7 +838,7 @@ index e497df6..e7d14af 100644
 +    for (auto x : effects) e += std::to_string(static_cast<int>(x)) + " ";
 +    for (auto x : prims) p += std::to_string(static_cast<int>(x)) + " ";
 +    printf("I:[ofox-haptics] %s caps=0x%x effects=[ %s] primitives=[ %s] -> %s\n",
-+           kVibratorInstance.c_str(), caps, e.c_str(), p.c_str(),
++           haptic_vib_name.c_str(), caps, e.c_str(), p.c_str(),
 +           haptic_state == 1 ? "effects ON" : "effects OFF");
 +}
 +
@@ -927,4 +973,3 @@ index 5dbbf72..ddf9bce 100644
 +int vibrate_compose_pattern(const char* name); // "success", "error", "warning"
 +
  #endif
- 
