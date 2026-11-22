@@ -151,6 +151,7 @@ jobs:
         SYNC_COMMIT_DATE=$(git log -1 --format=%cI)
         SYNC_COMMIT_MSG=$(git log -1 --format=%s)
         echo "sync-commit=$SYNC_COMMIT" >> $GITHUB_OUTPUT
+        echo "sync-commit-short=${SYNC_COMMIT:0:8}" >> $GITHUB_OUTPUT
         echo "== Commit repo sync yang dipakai build ini: $SYNC_COMMIT ($SYNC_COMMIT_DATE) =="
         echo "== Pesan commit: $SYNC_COMMIT_MSG =="
         echo "== Riwayat lengkap: https://gitlab.com/OrangeFox/sync/-/commits/master =="
@@ -467,31 +468,33 @@ jobs:
         fi
 
         echo "zip-path=$ZIP_PATH" >> "$GITHUB_OUTPUT"
+        # Versi untuk judul release, diambil dari nama zip (mis. OrangeFox-R12.0_5-Unofficial-marble.zip -> R12.0_5).
+        FOX_VER=$(basename "$ZIP_PATH" | sed -nE 's/^OrangeFox-(R[^-]+)-.*/\1/p')
+        echo "fox-version=${FOX_VER:-R12}" >> "$GITHUB_OUTPUT"
 
     - name: Upload to Release
       uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
       with:
         files: ${{ steps.verify.outputs.zip-path }}
-        name: ${{ github.event.inputs.DEVICE_NAME }}-fox12-${{ github.run_id }}
+        name: OrangeFox ${{ steps.verify.outputs.fox-version }} - ${{ github.event.inputs.DEVICE_NAME }}
         tag_name: ${{ github.run_id }}
         fail_on_unmatched_files: true
         body: |
-          | | |
-          |---|---|
-          | 📱 **Device** | POCO F5 / Redmi Note 12 Turbo (`${{ github.event.inputs.DEVICE_NAME }}`) |
-          | 🦊 **Recovery** | OrangeFox Recovery Project |
-          | 🌿 **Manifest** | fox_12.1 (STABLE) |
-          | 🎯 **Build Target** | `${{ github.event.inputs.BUILD_TARGET }}image` (release: flashable `.zip` only) |
-          | 🎨 **Variant** | Default (HyperOS/stock-tuned) |
-          | 📦 **Device Tree** | ${{ github.event.inputs.DEVICE_TREE_URL }} |
-          | 🌿 **Tree Branch** | `${{ github.event.inputs.DEVICE_TREE_BRANCH }}` |
-          | 🔩 **Kernel** | Uses the active ROM's kernel in boot_a/boot_b (HyperOS/AOSP-GKI custom ROMs) |
-          | 🛠️ **Toolchain** | OpenJDK 11 (Zulu) |
-          | 🔗 **Sync Commit** | [`${{ steps.sync.outputs.sync-commit }}`](https://gitlab.com/OrangeFox/sync/-/commit/${{ steps.sync.outputs.sync-commit }}) |
-          | 👤 **Maintainer** | ${{ github.event.inputs.OF_MAINTAINER }} (patch ${{ github.event.inputs.FOX_MAINTAINER_PATCH_VERSION }}) |
+          OrangeFox ${{ steps.verify.outputs.fox-version }} (unofficial) for POCO F5 / Redmi Note 12 Turbo (${{ github.event.inputs.DEVICE_NAME }}).
 
-          ---
-          ### ✨ OrangeFox Recovery — marble ✨
+          **Install**
+          Flash the zip from OrangeFox or TWRP. Make a backup first.
+
+          **Notes**
+          - Based on fox_12.1.
+          - No kernel included, it uses the one from your current ROM (HyperOS or GKI custom ROMs).
+          - This is an unofficial build. Please don't report issues to the OrangeFox team.
+
+          **Source**
+          - Device tree: ${{ github.event.inputs.DEVICE_TREE_URL }} (`${{ github.event.inputs.DEVICE_TREE_BRANCH }}`)
+          - OrangeFox sync: [`${{ steps.sync.outputs.sync-commit-short }}`](https://gitlab.com/OrangeFox/sync/-/commit/${{ steps.sync.outputs.sync-commit }})
+
+          Maintained by ${{ github.event.inputs.OF_MAINTAINER }}.
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
