@@ -100,11 +100,21 @@ jobs:
         DEBIAN_FRONTEND: noninteractive
       run: |
         # apt-get (bukan apt) supaya tidak muncul "WARNING: apt does not have a stable CLI interface"
+        # Tidak ada "apt-get upgrade": tidak dibutuhkan build, makan waktu, dan ikut memasang kernel/systemd baru
+        # yang tidak akan dipakai runner ini (kernel aktif tidak berganti tanpa reboot).
         sudo -E apt-get update
-        sudo -E apt-get upgrade -y
-        sudo -E apt-get install -yq \
-            linux-modules-extra-$(uname -r) \
-            git python3 tar aria2
+        sudo -E apt-get install -yq git python3 tar aria2
+
+        # linux-modules-extra-<kernel> hanya dipakai untuk modul zram. Paket untuk kernel image runner sering
+        # sudah dihapus dari arsip Ubuntu (build 2026-11-22: kernel 7.0.0-1017-azure -> "Unable to locate package"
+        # -> exit 100). Jadi opsional: kalau tidak ada, lanjut saja; langkah zram di bawah akan dilewati sendiri.
+        KMOD_PKG="linux-modules-extra-$(uname -r)"
+        if apt-cache show "$KMOD_PKG" >/dev/null 2>&1; then
+          sudo -E apt-get install -yq "$KMOD_PKG" || echo "::notice::$KMOD_PKG gagal dipasang -- zram mungkin tidak tersedia"
+        else
+          echo "::notice::$KMOD_PKG tidak ada di repo apt (kernel runner $(uname -r)) -- dilewati, zram mungkin tidak tersedia"
+        fi
+
         git clone https://gitlab.com/OrangeFox/misc/scripts.git
         cd scripts
         sudo bash setup/android_build_env.sh
@@ -304,11 +314,19 @@ jobs:
         swap-size-gb: 12
 
     - name: Enable zram swap
+      env:
+        DEBIAN_FRONTEND: noninteractive
       run: |
-        sudo apt-get update
-        sudo apt-get install -y zram-tools
-        echo -e 'ALGO=lz4\nPERCENT=50\nPRIORITY=100' | sudo tee /etc/default/zramswap
-        sudo systemctl restart zramswap.service
+        # zram opsional: kalau modul kernel zram tidak ada (lihat langkah "Prepare the build environment"),
+        # build tetap jalan memakai swapfile 12 GB dari langkah sebelumnya.
+        if sudo modprobe zram 2>/dev/null; then
+          sudo -E apt-get install -yq zram-tools
+          echo -e 'ALGO=lz4\nPERCENT=50\nPRIORITY=100' | sudo tee /etc/default/zramswap
+          sudo systemctl restart zramswap.service \
+            || echo "::notice::zramswap.service gagal start -- lanjut dengan swapfile saja"
+        else
+          echo "::notice::modul zram tidak tersedia di kernel $(uname -r) -- zram dilewati, pakai swapfile saja"
+        fi
         echo "== swap layout =="
         swapon --show
         free -h
@@ -357,7 +375,11 @@ jobs:
       uses: actions/upload-artifact@v7
       with:
         name: build-log-${{ github.run_id }}
-        path: ${{ steps.pwd.outputs.workspace-folder }}/build.log
+        # sync.log ikut diupload supaya kegagalan di tahap sync juga punya log; file yang belum ada diabaikan.
+        path: |
+          ${{ steps.pwd.outputs.workspace-folder }}/build.log
+          ${{ steps.pwd.outputs.workspace-folder }}/sync.log
+        if-no-files-found: ignore
         retention-days: 7
 
     - name: Verify build artifacts
@@ -414,4 +436,5 @@ jobs:
           ### ✨ OrangeFox Recovery — marble ✨
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
         
