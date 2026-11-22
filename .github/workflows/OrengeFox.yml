@@ -48,6 +48,11 @@ on:
         description: 'FOX_MAINTAINER_PATCH_VERSION'
         required: true
         default: '1'
+      HAPTIC_FEEDBACK:
+        description: 'Build dengan menu Haptic feedback (patch di patches/bootable_recovery). Hapus centang = build OrangeFox biasa.'
+        required: true
+        type: boolean
+        default: true
 
 jobs:
   build:
@@ -276,6 +281,42 @@ jobs:
         file "$DST"
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
+    # Menu "Haptic feedback" (efek Click/Tick/Pop/... per Button/Keyboard/Action + halaman tes Primitive/Compose),
+    # di-port dari OrangeFox fox_16.0. Patch ada di patches/bootable_recovery/*.patch di repo ini.
+    # Menu baru hanya muncul kalau HAL vibrator melaporkan dukungan efek; kalau tidak, menu Vibration lama tetap dipakai.
+    # Patch yang sudah terpasang dilewati; patch yang tidak cocok lagi dengan source dilewati dengan warning (build lanjut).
+    - name: Apply recovery patches (haptic feedback)
+      id: haptic
+      if: ${{ inputs.HAPTIC_FEEDBACK }}
+      run: |
+        REC=${{ steps.pwd.outputs.workspace-folder }}/fox_12.1/bootable/recovery
+        shopt -s nullglob
+        PATCHES=("$GITHUB_WORKSPACE"/patches/bootable_recovery/*.patch)
+        if [ ${#PATCHES[@]} -eq 0 ]; then
+          echo "::warning::HAPTIC_FEEDBACK dicentang tapi tidak ada patch di patches/bootable_recovery -- build tanpa haptic"
+          exit 0
+        fi
+        OK=1
+        for P in "${PATCHES[@]}"; do
+          NAME=$(basename "$P")
+          if git -C "$REC" apply -R --check "$P" 2>/dev/null; then
+            echo "$NAME sudah terpasang -- lewati"
+          elif git -C "$REC" apply --check "$P" 2>/tmp/patch.err; then
+            git -C "$REC" apply "$P"
+            echo "== $NAME diterapkan =="
+            git -C "$REC" apply --stat "$P"
+          else
+            OK=0
+            echo "::warning::$NAME tidak cocok dengan source bootable/recovery saat ini -- dilewati, build tanpa haptic"
+            cat /tmp/patch.err
+          fi
+        done
+        # Dibaca langkah release: judul & catatan hanya menyebut haptic kalau semua patch benar-benar terpasang
+        if [ "$OK" -eq 1 ]; then
+          echo "applied=true" >> "$GITHUB_OUTPUT"
+        fi
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
     - name: Clone device tree
       env:
         DEVICE_TREE_URL: ${{ github.event.inputs.DEVICE_TREE_URL }}
@@ -476,17 +517,18 @@ jobs:
       uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
       with:
         files: ${{ steps.verify.outputs.zip-path }}
-        name: OrangeFox ${{ steps.verify.outputs.fox-version }} - ${{ github.event.inputs.DEVICE_NAME }}
+        name: OrangeFox ${{ steps.verify.outputs.fox-version }} - ${{ github.event.inputs.DEVICE_NAME }}${{ steps.haptic.outputs.applied == 'true' && ' (Haptic)' || '' }}
         tag_name: ${{ github.run_id }}
         fail_on_unmatched_files: true
         body: |
-          **OrangeFox ${{ steps.verify.outputs.fox-version }} (unofficial) for POCO F5 / Redmi Note 12 Turbo (${{ github.event.inputs.DEVICE_NAME }})**.
+          OrangeFox ${{ steps.verify.outputs.fox-version }} (unofficial) for POCO F5 / Redmi Note 12 Turbo (${{ github.event.inputs.DEVICE_NAME }}).
 
           **Install**
           Flash the zip from OrangeFox or TWRP. Make a backup first.
 
           **Notes**
           - Based on fox_12.1.
+          - ${{ steps.haptic.outputs.applied == 'true' && 'Adds a Haptic feedback menu (Settings > Haptic feedback) with Click/Tick/Pop/... effects. It only shows up if the vibrator HAL supports effects, otherwise you get the normal Vibration menu.' || 'Standard OrangeFox vibration settings.' }}
           - No kernel included, it uses the one from your current ROM (HyperOS or GKI custom ROMs).
           - This is an unofficial build. Please don't report issues to the OrangeFox team.
 
@@ -497,5 +539,4 @@ jobs:
           Maintained by ${{ github.event.inputs.OF_MAINTAINER }}.
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
         
