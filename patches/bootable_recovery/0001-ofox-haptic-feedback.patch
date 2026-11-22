@@ -1,5 +1,5 @@
 diff --git a/data.cpp b/data.cpp
-index 1d995b7..0d2ca43 100755
+index 1d995b7..4f1d5d0 100755
 --- a/data.cpp
 +++ b/data.cpp
 @@ -51,6 +51,7 @@ extern "C"
@@ -79,6 +79,58 @@ index 1d995b7..0d2ca43 100755
  	int vib_value = 0;
  	GetValue(varName, vib_value);
  	if (vib_value) {
+@@ -1696,6 +1752,39 @@ void DataManager::Vibrate(const string& varName)
+ #endif
+ }
+ 
++// [ofox-haptics] Getaran saat daftar di-scroll, meniru OrangeFox fox_16.0 (ctapchuk):
++// di sana scroll memakai compose(LOW_TICK) dengan skala 0.35 + 0.55*v^2, dan karena HAL Xiaomi tidak
++// punya primitive_effect_*.bin, yang terputar adalah waveform Click. HAL Android 12 tidak punya compose,
++// jadi di sini dipakai perform(CLICK) dengan 3 tingkat kekuatan yang mendekati skala tersebut.
++// Hanya jalan kalau HAL punya efek dan efek tab Button aktif (strength bukan Disabled).
++// speedPct = jarak scroll per event/frame dalam persen tinggi satu item; -1 = awal gesture scroll.
++void DataManager::ScrollHaptic(int speedPct)
++{
++#ifndef TW_NO_HAPTICS
++	if (GetIntValue("of_use_haptic_effects") != 1 || GetIntValue("of_button_haptic_enable") != 1)
++		return;
++	if (GetIntValue("of_button_haptic_strength") < 0 || GetIntValue("of_haptic_test_page") == 1)
++		return;
++
++	static struct timespec last = {0, 0};
++	struct timespec now;
++	clock_gettime(CLOCK_MONOTONIC, &now);
++	long long elapsed_ms = (now.tv_sec - last.tv_sec) * 1000LL + (now.tv_nsec - last.tv_nsec) / 1000000LL;
++	if (elapsed_ms < 40)
++		return;  // maksimal ~25 tick per detik
++	last = now;
++
++	// skala ctapchuk 0.35 + 0.55*v^2 (v = kecepatan 0..1): < 0.5 -> Light, < 0.75 -> Medium, sisanya Strong.
++	// Awal gesture: skala 0.4 -> Light.
++	int strength = 0;  // EffectStrength::LIGHT
++	if (speedPct >= 85)
++		strength = 2;  // STRONG
++	else if (speedPct >= 52)
++		strength = 1;  // MEDIUM
++	vibrate_effect(0 /* Effect::CLICK */, strength);
++#endif
++}
++
+ #ifdef OF_CLASSIC_LEDS_FUNCTION
+ // use R9.x Leds function
+ void DataManager::Leds(bool enable)
+diff --git a/data.hpp b/data.hpp
+index b88495f..aa1ccec 100755
+--- a/data.hpp
++++ b/data.hpp
+@@ -59,6 +59,7 @@ public:
+ 	static void DumpValues();
+ 	static void update_tz_environment_variables();
+ 	static void Vibrate(const string& varName);
++	static void ScrollHaptic(int speedPct); // [ofox-haptics] tick saat list di-scroll
+ 	static void SetBackupFolder();
+ 	static void SetDefaultValues();
+ 	static void Leds(bool enable);	
 diff --git a/gui/action.cpp b/gui/action.cpp
 index 293dd16..123607c 100755
 --- a/gui/action.cpp
@@ -115,7 +167,7 @@ index 293dd16..123607c 100755
  {
    return TWFunc::Set_Brightness(arg);
 diff --git a/gui/objects.hpp b/gui/objects.hpp
-index bdf35bd..cefdab1 100644
+index bdf35bd..758a86a 100644
 --- a/gui/objects.hpp
 +++ b/gui/objects.hpp
 @@ -389,6 +389,8 @@ protected:
@@ -127,6 +179,65 @@ index bdf35bd..cefdab1 100644
  	int cmdf(std::string arg, std::string file);
  	int batch(std::string arg);
  	int passwordcheck(std::string arg);
+@@ -690,6 +692,7 @@ protected:
+ 	size_t selectedItem; // selected item index after the initial touch, set to -1 if we are scrolling
+ 	int touchDebounce; // debounce for touches, minimum of 6 pixels but may be larger calculated based actualItemHeight / 3
+ 	int lastY, last2Y; // last 2 touch locations, used for tracking kinetic scroll speed
++	bool ofoxScrollStarted; // [ofox-haptics] tick awal sudah diberikan untuk gesture scroll ini
+ 	int fastScroll; // indicates that the inital touch was inside the fastscroll region - makes for easier fast scrolling as the touches don't have to stay within the fast scroll region and you drag your finger
+ 	int mUpdate; // indicates that a change took place and we need to re-render
+ 	bool AddLines(std::vector<std::string>* origText, std::vector<std::string>* origColor, size_t* lastCount, std::vector<std::string>* rText, std::vector<std::string>* rColor);
+diff --git a/gui/scrolllist.cpp b/gui/scrolllist.cpp
+index 2b06941..7e8a07f 100755
+--- a/gui/scrolllist.cpp
++++ b/gui/scrolllist.cpp
+@@ -49,6 +49,7 @@ GUIScrollList::GUIScrollList(xml_node<>* node) : GUIObject(node)
+ 	mFastScrollW = mFastScrollLineW = mFastScrollRectW = mFastScrollRectH = 0;
+ 	mFastScrollRectCurrentY = mFastScrollRectCurrentH = mFastScrollRectTouchY = 0;
+ 	lastY = last2Y = fastScroll = 0;
++	ofoxScrollStarted = false; // [ofox-haptics]
+ 	mUpdate = 0;
+ 	touchDebounce = 6;
+ 	ConvertStrToColor("black", &mBackgroundColor);
+@@ -556,7 +557,10 @@ int GUIScrollList::Update(void)
+ 	}
+ 	if (abs(scrollingSpeed) < SCROLLING_FLOOR)
+ 		scrollingSpeed = 0;
++	int prevFirstItem = firstDisplayedItem; // [ofox-haptics]
+ 	HandleScrolling();
++	if (firstDisplayedItem != prevFirstItem && actualItemHeight > 0)
++		DataManager::ScrollHaptic(abs(oldScrollingSpeed) * 100 / actualItemHeight);
+ 	mUpdate = 1;
+ 
+ 	return 0;
+@@ -621,6 +625,7 @@ int GUIScrollList::NotifyTouch(TOUCH_STATE state, int x, int y)
+ 		if (selectedItem != NO_ITEM)
+ 			mUpdate = 1;
+ 		lastY = last2Y = y;
++		ofoxScrollStarted = false; // [ofox-haptics]
+ 		break;
+ 
+ 	case TOUCH_DRAG:
+@@ -658,11 +663,19 @@ int GUIScrollList::NotifyTouch(TOUCH_STATE state, int x, int y)
+ 		selectedItem = NO_ITEM; // nothing is selected because we dragged too far
+ 		// Handle scrolling
+ 		if (hasScroll) {
++			int dragDistance = abs(y - lastY); // [ofox-haptics]
++			int prevFirstItem = firstDisplayedItem;
++			if (!ofoxScrollStarted) {
++				ofoxScrollStarted = true;
++				DataManager::ScrollHaptic(-1); // tick ringan saat gesture scroll dimulai
++			}
+ 			y_offset += y - lastY; // adjust the scrolling offset based on the difference between the starting touch and the current touch
+ 			last2Y = lastY; // keep track of previous y locations so that we can tell how fast to scroll for kinetic scrolling
+ 			lastY = y; // update last touch to the current touch so we can tell how far and what direction we scroll for the next touch event
+ 
+ 			HandleScrolling();
++			if (firstDisplayedItem != prevFirstItem && actualItemHeight > 0)
++				DataManager::ScrollHaptic(dragDistance * 100 / actualItemHeight);
+ 		} else
+ 			y_offset = 0;
+ 		mUpdate = 1;
 diff --git a/gui/theme/common/languages/en.xml b/gui/theme/common/languages/en.xml
 index 7c64c5a..e4d5992 100644
 --- a/gui/theme/common/languages/en.xml
