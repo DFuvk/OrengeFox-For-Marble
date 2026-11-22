@@ -69,7 +69,7 @@ jobs:
     # Third-party actions di-pin ke SHA (bukan @main/@master/tag) karena job ini punya token contents:write.
     # SHA di bawah = versi yang jalan di build sukses 2026-10-12. Dependabot (github-actions) akan menaikkannya.
     - name: Free disk space (pre-cleanup)
-      uses: jlumbroso/free-disk-space@36e9a5af4eddb91fc11aec4c6f6f79b3cc0cb523 # main
+      uses: jlumbroso/free-disk-space@cf1e78c50ca91e757bab3edc229027eebfc07871 # main
       with:
         preinstalled-runtimes: true
         android: true
@@ -389,7 +389,7 @@ jobs:
         echo "zip-path=$ZIP_PATH" >> "$GITHUB_OUTPUT"
 
     - name: Upload to Release
-      uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+      uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
       with:
         files: ${{ steps.verify.outputs.zip-path }}
         name: ${{ github.event.inputs.DEVICE_NAME }}-fox12-${{ github.run_id }}
@@ -398,7 +398,7 @@ jobs:
         body: |
           | | |
           |---|---|
-          | 📱 **Device** | Redmi Note 12 Turbo (`${{ github.event.inputs.DEVICE_NAME }}`) |
+          | 📱 **Device** | POCO F5 / Redmi Note 12 Turbo (`${{ github.event.inputs.DEVICE_NAME }}`) |
           | 🦊 **Recovery** | OrangeFox Recovery Project |
           | 🌿 **Manifest** | fox_12.1 (STABLE) |
           | 🎯 **Build Target** | `${{ github.event.inputs.BUILD_TARGET }}image` (release: flashable `.zip` only) |
