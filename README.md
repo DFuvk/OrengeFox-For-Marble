@@ -1,86 +1,63 @@
 <p align="center">
-  
-  ![OrengeFox For Marble](assets/social-preview.png)
-
-<p align="center">
-
-  <img src="https://img.shields.io/badge/OrangeFox-Recovery-FF6E1E?style=for-the-badge&logo=android&logoColor=white" />
-  <img src="https://img.shields.io/badge/Device-marble-blue?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/License-Apache%202.0-green?style=for-the-badge" />
+  <img src="assets/social-preview.png" alt="OrangeFox Recovery untuk Redmi Note 12 Turbo (marble)">
 </p>
 
-<h1 align="center">OrangeFox Recovery — For Marble</h1>
 <p align="center">
-GitHub Actions build for <b>OrangeFox Recovery Project (OFRP)</b> on <b>POCO F5</b> / <b>Redmi Note 12 Turbo</b> (<code>marble</code>)
+  <img src="https://img.shields.io/badge/OrangeFox-Recovery-FF6E1E?style=for-the-badge&logo=android&logoColor=white" alt="OrangeFox Recovery">
+  <img src="https://img.shields.io/badge/Device-marble-blue?style=for-the-badge" alt="Device marble">
+  <img src="https://img.shields.io/badge/License-Apache%202.0-green?style=for-the-badge" alt="Apache License 2.0">
 </p>
 
----
+# OrangeFox Recovery untuk Redmi Note 12 Turbo (marble)
 
-## 📖 About
+Repo ini isinya build OrangeFox Recovery (OFRP) buat Redmi Note 12 Turbo, codename **marble**. Device tree-nya nggak saya simpan di sini. Waktu build, GitHub Actions yang sync source `fox_12.1`, clone device tree, build recovery, terus upload hasilnya ke Releases.
 
-This repository **does not contain a device tree**. It contains a GitHub Actions workflow
-(`.github/workflows/OrengeFox.yml`) that syncs the OrangeFox `fox_12.1` sources, clones the device tree
-at build time, builds the recovery, and publishes the result as a GitHub Release.
+Device tree default yang dipakai: [Ctapchuk/android_device_xiaomi_marble-OFRP](https://github.com/Ctapchuk/android_device_xiaomi_marble-OFRP), branch `fox_12.1`. Kalau mau coba tree lain, ganti input `DEVICE_TREE_URL` sama `DEVICE_TREE_BRANCH` pas run workflow.
 
-| Market Name | Codename |
-| --- | --- |
-| POCO F5 / Redmi Note 12 Turbo | `marble` |
+## Isi repo
 
-The device tree used by default is **[Ctapchuk/android_device_xiaomi_marble-OFRP](https://github.com/Ctapchuk/android_device_xiaomi_marble-OFRP)** (branch `fox_12.1`).
+- `.github/workflows/OrengeFox.yml` - workflow build-nya
+- `.github/dependabot.yml` - update action GitHub tiap minggu
+- `assets/social-preview.png` - banner repo
 
-## ✨ Features
+## Fitur
 
-- Modern, easy-to-use theme
-- ZIP, image, and OTA flashing support
-- Built-in file manager, terminal, and aFTP
-- Full partition backup/restore support
-- Data decryption support (format data-friendly)
-- MTP, ADB sideload, and ADB shell
+- Tema OrangeFox, ada dark mode
+- Flash zip, img, dan OTA
+- File manager, terminal, aFTP
+- Backup/restore partisi
+- Decrypt data, aman buat yang pakai format data
+- MTP, ADB sideload, ADB shell
 
-## 🔨 How to build
+## Build
 
-1. Open the **Actions** tab → **Recovery OFOX Build (fox_12.1) — marble** → **Run workflow**.
-2. Keep the defaults, or change the inputs (device tree URL/branch, maintainer name, patch version).
-3. Wait for the job to finish (about 1 hour). The recovery `.zip` appears under **Releases**.
+1. Buka tab **Actions**, pilih workflow **Recovery OFOX Build (fox_12.1) — marble**, lalu klik **Run workflow**.
+2. Biarkan default atau ganti input sesuai kebutuhan (device tree, branch, nama maintainer, patch version).
+3. Tunggu sekitar 1 jam. Kalau berhasil, zip-nya muncul di **Releases**.
 
-Only the repository owner can start the workflow. If a build fails, the full `build.log` is attached to the run as an artifact for 7 days.
+Workflow ini cuma bisa dijalanin owner repo. Kalau build gagal, `build.log` lengkapnya ikut diupload sebagai artifact dan disimpan 7 hari.
 
-## 📥 Installation
+## Install
 
-Each release contains one file: the flashable **OrangeFox recovery `.zip`**, named like
-`OrangeFox-R12.0_<patch>-Unofficial-marble.zip`.
+Tiap release isinya satu file zip recovery, namanya kira-kira `OrangeFox-R12.0_<patch>-Unofficial-marble.zip`.
 
-1. Download the `.zip` from **Releases**.
-2. Boot into a working custom recovery (for example an older OrangeFox or TWRP build for `marble`).
-3. Flash the `.zip`.
-4. Reboot back into recovery to verify.
+1. Download zip-nya dari **Releases**.
+2. Boot ke custom recovery yang sudah jalan (misalnya OrangeFox atau TWRP lama buat marble).
+3. Flash zip-nya.
+4. Reboot recovery lagi buat mastiin hasilnya.
 
-> ℹ️ The release has no `.img`, so the zip needs an already working custom recovery to be flashed from.
-> ⚠️ Make sure the bootloader is unlocked before flashing.
+Release ini nggak nyediain `.img`, jadi zip-nya harus di-flash dari recovery yang sudah ada. Bootloader juga harus sudah unlocked.
 
-## 📂 Repository Structure
+## Credits
 
-```
-.
-├── .github/
-│   ├── dependabot.yml
-│   └── workflows/
-│       └── OrengeFox.yml
-├── assets/
-│   └── social-preview.png
-└── README.md
-```
+- [OrangeFox Recovery Project](https://orangefox.tech)
+- [Ctapchuk/android_device_xiaomi_marble-OFRP](https://github.com/Ctapchuk/android_device_xiaomi_marble-OFRP) - device tree
+- Teman-teman di komunitas TWRP/OFRP yang udah bantu buat marble
 
-## 🙏 Credits & Source
+## Disclaimer
 
-- **OrangeFox Recovery Project** — https://orangefox.tech
-- Device tree: [Ctapchuk/android_device_xiaomi_marble-OFRP](https://github.com/Ctapchuk/android_device_xiaomi_marble-OFRP)
-- The TWRP/OFRP community for Xiaomi `marble` devices
+Flash custom recovery bisa bikin garansi hangus, bootloop, atau brick kalau salah langkah. Resikonya ditanggung sendiri. Saya sebagai pemilik repo ini nggak bertanggung jawab kalau ada kerusakan di perangkat kamu.
 
-## ⚠️ Disclaimer
+## Lisensi
 
-Flashing a custom recovery may void your device warranty and can cause bootloops or bricking if not done correctly. Use at your own risk — the author/contributors of this repository are not responsible for any damage to your device.
-
-## 📄 License
-
-Distributed under the **Apache License 2.0**, following the upstream OrangeFox/TWRP/AOSP licensing.
+Apache License 2.0, ngikut lisensi upstream OrangeFox/TWRP/AOSP.

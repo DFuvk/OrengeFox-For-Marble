@@ -398,7 +398,7 @@ jobs:
         body: |
           | | |
           |---|---|
-          | 📱 **Device** | POCO F5 / Redmi Note 12 Turbo (`${{ github.event.inputs.DEVICE_NAME }}`) |
+          | 📱 **Device** | Redmi Note 12 Turbo (`${{ github.event.inputs.DEVICE_NAME }}`) |
           | 🦊 **Recovery** | OrangeFox Recovery Project |
           | 🌿 **Manifest** | fox_12.1 (STABLE) |
           | 🎯 **Build Target** | `${{ github.event.inputs.BUILD_TARGET }}image` (release: flashable `.zip` only) |
