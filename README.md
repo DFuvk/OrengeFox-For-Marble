@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/social-preview.png" alt="OrangeFox Recovery untuk Redmi Note 12 Turbo (marble)">
+  <img src="assets/social-preview.png" alt="OrangeFox Recovery for Redmi Note 12 Turbo (marble)">
 </p>
 
 <p align="center">
@@ -8,56 +8,56 @@
   <img src="https://img.shields.io/badge/License-Apache%202.0-green?style=for-the-badge" alt="Apache License 2.0">
 </p>
 
-# OrangeFox Recovery untuk Redmi Note 12 Turbo (marble)
+# OrangeFox Recovery for Redmi Note 12 Turbo (marble)
 
-Repo ini isinya build OrangeFox Recovery (OFRP) buat Redmi Note 12 Turbo, codename **marble**. Device tree-nya nggak saya simpan di sini. Waktu build, GitHub Actions yang sync source `fox_12.1`, clone device tree, build recovery, terus upload hasilnya ke Releases.
+This repo is where I build OrangeFox Recovery (OFRP) for the Redmi Note 12 Turbo, codename **marble**. There is no device tree stored here. GitHub Actions pulls the `fox_12.1` sources, clones the device tree, builds the recovery, and uploads the zip to Releases.
 
-Device tree default yang dipakai: [Ctapchuk/android_device_xiaomi_marble-OFRP](https://github.com/Ctapchuk/android_device_xiaomi_marble-OFRP), branch `fox_12.1`. Kalau mau coba tree lain, ganti input `DEVICE_TREE_URL` sama `DEVICE_TREE_BRANCH` pas run workflow.
+The default device tree is [Ctapchuk/android_device_xiaomi_marble-OFRP](https://github.com/Ctapchuk/android_device_xiaomi_marble-OFRP), branch `fox_12.1`. If you want to try a different tree, change `DEVICE_TREE_URL` and `DEVICE_TREE_BRANCH` when you run the workflow.
 
-## Isi repo
+## What's in the repo
 
-- `.github/workflows/OrengeFox.yml` - workflow build-nya
-- `.github/dependabot.yml` - update action GitHub tiap minggu
-- `assets/social-preview.png` - banner repo
+- `.github/workflows/OrengeFox.yml` - the build workflow
+- `.github/dependabot.yml` - weekly GitHub Actions updates
+- `assets/social-preview.png` - repo banner
 
-## Fitur
+## Features
 
-- Tema OrangeFox, ada dark mode
-- Flash zip, img, dan OTA
-- File manager, terminal, aFTP
-- Backup/restore partisi
-- Decrypt data, aman buat yang pakai format data
-- MTP, ADB sideload, ADB shell
+- OrangeFox theme with dark mode
+- Flash zip, img, and OTA files
+- File manager, terminal, and aFTP
+- Backup and restore partitions
+- Data decryption, safe to use with format data
+- MTP, ADB sideload, and ADB shell
 
-## Build
+## Building
 
-1. Buka tab **Actions**, pilih workflow **Recovery OFOX Build (fox_12.1) — marble**, lalu klik **Run workflow**.
-2. Biarkan default atau ganti input sesuai kebutuhan (device tree, branch, nama maintainer, patch version).
-3. Tunggu sekitar 1 jam. Kalau berhasil, zip-nya muncul di **Releases**.
+1. Open the **Actions** tab, pick **Recovery OFOX Build (fox_12.1) — marble**, then click **Run workflow**.
+2. Leave the defaults or change the inputs (device tree, branch, maintainer name, patch version).
+3. Wait around an hour. If it succeeds, the zip shows up under **Releases**.
 
-Workflow ini cuma bisa dijalanin owner repo. Kalau build gagal, `build.log` lengkapnya ikut diupload sebagai artifact dan disimpan 7 hari.
+Only the repo owner can start the workflow. If a build fails, the full `build.log` is uploaded as an artifact and kept for 7 days.
 
-## Install
+## Installing
 
-Tiap release isinya satu file zip recovery, namanya kira-kira `OrangeFox-R12.0_<patch>-Unofficial-marble.zip`.
+Each release contains one zip, named something like `OrangeFox-R12.0_<patch>-Unofficial-marble.zip`.
 
-1. Download zip-nya dari **Releases**.
-2. Boot ke custom recovery yang sudah jalan (misalnya OrangeFox atau TWRP lama buat marble).
-3. Flash zip-nya.
-4. Reboot recovery lagi buat mastiin hasilnya.
+1. Download the zip from **Releases**.
+2. Boot into a working custom recovery (an older OrangeFox or TWRP build for marble will do).
+3. Flash the zip.
+4. Reboot back into recovery to check that it worked.
 
-Release ini nggak nyediain `.img`, jadi zip-nya harus di-flash dari recovery yang sudah ada. Bootloader juga harus sudah unlocked.
+There is no `.img` in the release, so the zip has to be flashed from an existing custom recovery. Your bootloader also needs to be unlocked.
 
 ## Credits
 
 - [OrangeFox Recovery Project](https://orangefox.tech)
 - [Ctapchuk/android_device_xiaomi_marble-OFRP](https://github.com/Ctapchuk/android_device_xiaomi_marble-OFRP) - device tree
-- Teman-teman di komunitas TWRP/OFRP yang udah bantu buat marble
+- Everyone in the TWRP/OFRP community who helped with marble
 
 ## Disclaimer
 
-Flash custom recovery bisa bikin garansi hangus, bootloop, atau brick kalau salah langkah. Resikonya ditanggung sendiri. Saya sebagai pemilik repo ini nggak bertanggung jawab kalau ada kerusakan di perangkat kamu.
+Flashing a custom recovery can void your warranty, cause a bootloop, or brick the phone if something goes wrong. You do it at your own risk. I'm not responsible for any damage to your device.
 
-## Lisensi
+## License
 
-Apache License 2.0, ngikut lisensi upstream OrangeFox/TWRP/AOSP.
+Apache License 2.0, same as the upstream OrangeFox/TWRP/AOSP licensing.
