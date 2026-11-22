@@ -217,6 +217,64 @@ jobs:
         grep -n -B1 -A1 'orangefox_soong.mk' "$F"
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
+    # Kredit "By <OF_MAINTAINER>" di banner "Welcome to OrangeFox Recovery!" (TWFunc::Welcome_Message di
+    # bootable/recovery/twrp-functions.cpp). Tidak ada flag build untuk ini, jadi source dipatch.
+    # Teks ditulis langsung (bukan macro OF_MAINTAINER) karena twrp-functions.cpp juga dikompilasi oleh
+    # twrpTarMain/Android.mk yang tidak membawa -DOF_MAINTAINER.
+    # Idempotent (pakai penanda /* ofox-credit */) dan tidak menggagalkan build kalau layout source berubah.
+    - name: Add maintainer credit to welcome banner
+      env:
+        OF_MAINTAINER: ${{ github.event.inputs.OF_MAINTAINER }}
+      run: |
+        F=${{ steps.pwd.outputs.workspace-folder }}/fox_12.1/bootable/recovery/twrp-functions.cpp
+        CREDIT="By ${OF_MAINTAINER}"
+        MARK='/* ofox-credit */'
+        if [ ! -f "$F" ]; then
+          echo "::warning::$F tidak ada -- kredit dilewati"; exit 0
+        fi
+        # Hanya karakter aman supaya tidak merusak string C / perintah awk.
+        if ! printf '%s' "$OF_MAINTAINER" | grep -qE '^[A-Za-z0-9 ._@-]+$'; then
+          echo "::warning::OF_MAINTAINER kosong atau berisi karakter yang tidak didukung -- kredit dilewati"; exit 0
+        fi
+        if grep -qF "$MARK" "$F"; then
+          echo "Kredit sudah ada -- lewati"; exit 0
+        fi
+        N=$(grep -n 'Welcome to OrangeFox Recovery' "$F" | head -n1 | cut -d: -f1)
+        if [ -z "$N" ]; then
+          echo "::warning::baris 'Welcome to OrangeFox Recovery' tidak ketemu di $F -- kredit dilewati"; exit 0
+        fi
+        LINE=$(sed -n "${N}p" "$F")
+        if ! printf '%s' "$LINE" | grep -qE ';[[:space:]]*$'; then
+          echo "::warning::baris Welcome bukan statement 1 baris -- kredit dilewati"; exit 0
+        fi
+        INDENT=$(printf '%s' "$LINE" | sed -E 's/^([[:space:]]*).*/\1/')
+        awk -v n="$N" -v ins="${INDENT}gui_print_color(\"green\", \"${CREDIT}\\\\n\"); ${MARK}" \
+          'NR==n{print; print ins; next} 1' "$F" > "$F.tmp" && mv "$F.tmp" "$F"
+        echo "== Kredit ditambahkan =="
+        grep -n -B1 -A1 -F "$MARK" "$F"
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    # Foto profil maintainer di halaman About. Theme memakai PNG persegi 192x192; bentuk bulat berasal dari
+    # card.png yang digambar di atasnya (lubang transparan), jadi foto TIDAK perlu dibulatkan sendiri.
+    # Sumber: assets/maintainer.png di repo ini. Kalau file tidak ada / bukan PNG 192x192, avatar bawaan dipakai.
+    - name: Set maintainer avatar (About page)
+      run: |
+        SRC="$GITHUB_WORKSPACE/assets/maintainer.png"
+        DST=${{ steps.pwd.outputs.workspace-folder }}/fox_12.1/bootable/recovery/gui/theme/portrait_hdpi/images/Default/About/maintainer.png
+        if [ ! -f "$SRC" ]; then
+          echo "::notice::assets/maintainer.png tidak ada di repo -- avatar bawaan dipakai"; exit 0
+        fi
+        if ! file "$SRC" | grep -q 'PNG image data, 192 x 192'; then
+          echo "::warning::assets/maintainer.png harus PNG 192x192 ($(file -b "$SRC")) -- avatar bawaan dipakai"; exit 0
+        fi
+        if [ ! -f "$DST" ]; then
+          echo "::warning::$DST tidak ada (layout theme berubah?) -- avatar tidak diganti"; exit 0
+        fi
+        cp -f "$SRC" "$DST"
+        echo "== Avatar maintainer diganti =="
+        file "$DST"
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
     - name: Clone device tree
       env:
         DEVICE_TREE_URL: ${{ github.event.inputs.DEVICE_TREE_URL }}
