@@ -1,0 +1,90 @@
+diff --git a/BoardConfig.mk b/BoardConfig.mk
+index 4c2ad34..fd38931 100644
+--- a/BoardConfig.mk
++++ b/BoardConfig.mk
+@@ -122,6 +122,20 @@ TW_SUPPORT_INPUT_AIDL_HAPTICS := true
+ TW_SUPPORT_INPUT_AIDL_HAPTICS_FIX_OFF := true
+ TW_SUPPORT_INPUT_AIDL_HAPTICS_FQNAME := "IVibrator/vibratorfeature"
+ 
++# [ofox-haptics] HAL vibrator qcom open source (vendor/qcom/opensource/vibrator), dibuild dari source
++# fox_12.1. HAL ini mendukung IVibrator::perform() (Click/Double click/Tick/Thud/Pop/Heavy click)
++# untuk menu Haptic feedback. Recovery memakai IVibrator/default kalau ada, kalau tidak kembali ke
++# HAL Xiaomi (FQNAME di atas), jadi getaran tetap jalan walau HAL qcom gagal start.
++TARGET_RECOVERY_DEVICE_MODULES += \
++    vendor.qti.hardware.vibrator.service \
++    vendor.qti.hardware.vibrator.impl \
++    libqtivibratoreffect
++RECOVERY_BINARY_SOURCE_FILES += \
++    $(TARGET_OUT_VENDOR_EXECUTABLES)/hw/vendor.qti.hardware.vibrator.service
++RECOVERY_LIBRARY_SOURCE_FILES += \
++    $(TARGET_OUT_VENDOR_SHARED_LIBRARIES)/vendor.qti.hardware.vibrator.impl.so \
++    $(TARGET_OUT_VENDOR_SHARED_LIBRARIES)/libqtivibratoreffect.so
++
+ TARGET_RECOVERY_DEVICE_MODULES += libexpat
+ RECOVERY_LIBRARY_SOURCE_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/libexpat.so
+ 
+diff --git a/recovery/root/init.recovery.qcom.rc b/recovery/root/init.recovery.qcom.rc
+index e5f2588..6618475 100644
+--- a/recovery/root/init.recovery.qcom.rc
++++ b/recovery/root/init.recovery.qcom.rc
+@@ -47,6 +47,7 @@ on property:twrp.modules.loaded=true
+     write /sys/kernel/boot_adsp/boot 1
+     wait /sys/class/power_supply/battery
+     start health-hal-2-1
++    start vendor.qti.vibrator
+     start vibratorfeature-hal-service
+     start batterysecret
+     umount /firmware
+diff --git a/recovery/root/system/etc/init/vendor.qti.hardware.vibrator.service.rc b/recovery/root/system/etc/init/vendor.qti.hardware.vibrator.service.rc
+new file mode 100644
+index 0000000..25e4ecf
+--- /dev/null
++++ b/recovery/root/system/etc/init/vendor.qti.hardware.vibrator.service.rc
+@@ -0,0 +1,8 @@
++# [ofox-haptics] HAL vibrator qcom (dibuild dari vendor/qcom/opensource/vibrator)
++service vendor.qti.vibrator /system/bin/vendor.qti.hardware.vibrator.service
++    class hal
++    user root
++    group root input
++    setenv LD_LIBRARY_PATH /vendor/lib64:/vendor/lib64/hw:/system/lib64:/sbin
++    disabled
++    seclabel u:r:recovery:s0
+diff --git a/recovery/root/vendor/etc/vintf/manifest/vendor.qti.hardware.vibrator.service.xml b/recovery/root/vendor/etc/vintf/manifest/vendor.qti.hardware.vibrator.service.xml
+new file mode 100644
+index 0000000..df29ada
+--- /dev/null
++++ b/recovery/root/vendor/etc/vintf/manifest/vendor.qti.hardware.vibrator.service.xml
+@@ -0,0 +1,33 @@
++<!-- Copyright (c) 2020 The Linux Foundation. All rights reserved.
++
++Redistribution and use in source and binary forms, with or without
++modification, are permitted provided that the following conditions are
++met:
++    * Redistributions of source code must retain the above copyright
++      notice, this list of conditions and the following disclaimer.
++    * Redistributions in binary form must reproduce the above
++      copyright notice, this list of conditions and the following
++      disclaimer in the documentation and/or other materials provided
++      with the distribution.
++    * Neither the name of The Linux Foundation nor the names of its
++      contributors may be used to endorse or promote products derived
++      from this software without specific prior written permission.
++
++THIS SOFTWARE IS PROVIDED "AS IS" AND ANY EXPRESS OR IMPLIED
++WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
++MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT
++ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS
++BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
++BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
++WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
++OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
++IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++-->
++<manifest version="1.0" type="device">
++    <hal format="aidl">
++        <name>android.hardware.vibrator</name>
++        <fqname>IVibrator/default</fqname>
++    </hal>
++</manifest>
