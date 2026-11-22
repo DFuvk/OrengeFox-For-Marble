@@ -267,17 +267,34 @@ jobs:
         fi
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
-    - name: Set Swap Space
-      uses: pierotofy/set-swap-space@fc79b3f67fa8a838184ce84a674ca12238d2c761 # master
-      with:
-        swap-size-gb: 12
+    # Build Android 16 butuh jauh lebih banyak memori daripada 12.1 (analisis Soong). Runner gratis cuma 16 GB RAM dan
+    # zram di runner tidak selalu bisa start, jadi swapfile dibuat sebesar mungkin: sisa disk dikurangi ~45 GB untuk out/,
+    # maksimal 32 GB. Run #1 fox_16.0 mati dengan "runner lost communication" (kemungkinan RAM habis) memakai swap 12 GB.
+    - name: Set Swap Space (adaptif)
+      run: |
+        FREE_G=$(df --output=avail -BG / | tail -n1 | tr -dc '0-9')
+        SWAP_G=$(( FREE_G - 45 ))
+        if [ "$SWAP_G" -gt 32 ]; then SWAP_G=32; fi
+        echo "Disk kosong: ${FREE_G} GB -> swap ${SWAP_G} GB"
+        if [ "$SWAP_G" -lt 4 ]; then
+          echo "::warning::disk tinggal ${FREE_G} GB -- swapfile tambahan tidak dibuat (build bisa kehabisan RAM/disk)"
+          exit 0
+        fi
+        sudo swapoff -a || true
+        sudo rm -f /swapfile
+        sudo fallocate -l "${SWAP_G}G" /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile >/dev/null
+        sudo swapon /swapfile
+        swapon --show
+        free -h
 
     - name: Enable zram swap
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
         # zram opsional: kalau modul kernel zram tidak ada (lihat langkah "Prepare the build environment"),
-        # build tetap jalan memakai swapfile 12 GB dari langkah sebelumnya.
+        # build tetap jalan memakai swapfile dari langkah sebelumnya.
         if sudo modprobe zram 2>/dev/null; then
           sudo -E apt-get install -yq zram-tools
           echo -e 'ALGO=lz4\nPERCENT=50\nPRIORITY=100' | sudo tee /etc/default/zramswap
@@ -369,10 +386,24 @@ jobs:
           exit 1
         fi
 
-        set -e
-        set -o pipefail
         # Tidak perlu "make clean": runner baru, folder out/ belum ada. Android 16 memakai JDK bawaan prebuilts/jdk.
+
+        # Lindungi agen runner dari OOM killer: kalau RAM habis, yang mati proses build (error terbaca di log),
+        # bukan runner-nya ("lost communication" tanpa log).
+        for P in $(pgrep -f 'Runner.Listener|Runner.Worker' || true); do
+          echo -1000 | sudo tee "/proc/$P/oom_score_adj" >/dev/null || true
+        done
+        # Monitor RAM/swap/disk tiap 60 detik (tampil di log step ini dan disimpan ke resource-monitor.log)
+        MON_LOG=${{ steps.pwd.outputs.workspace-folder }}/resource-monitor.log
+        ( while sleep 60; do
+            echo "[monitor $(date -u +%H:%M:%S)] $(free -m | awk '/^Mem:/{printf "RAM %d/%d MB", $3, $2} /^Swap:/{printf " | swap %d/%d MB", $3, $2}') | disk kosong $(df -h / | awk 'NR==2{print $4}')" | tee -a "$MON_LOG"
+          done ) &
+        MON_PID=$!
+
         mka adbd "${IN_BUILD_TARGET}image" -j$(nproc --all) 2>&1 | tee ${{ steps.pwd.outputs.workspace-folder }}/build.log
+        RC=${PIPESTATUS[0]}
+        kill "$MON_PID" 2>/dev/null || true
+        exit "$RC"
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Upload build log (jika build gagal)
@@ -384,6 +415,7 @@ jobs:
         path: |
           ${{ steps.pwd.outputs.workspace-folder }}/build.log
           ${{ steps.pwd.outputs.workspace-folder }}/sync.log
+          ${{ steps.pwd.outputs.workspace-folder }}/resource-monitor.log
         if-no-files-found: ignore
         retention-days: 7
 
@@ -446,4 +478,5 @@ jobs:
           Maintained by ${{ github.event.inputs.OF_MAINTAINER }}.
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
         
