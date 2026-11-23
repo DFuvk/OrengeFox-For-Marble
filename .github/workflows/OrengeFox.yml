@@ -508,6 +508,18 @@ jobs:
         free -h
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
+    # Banner recovery menampilkan "[Branch]" dari `git branch --show-current` di bootable/recovery. repo sync
+    # meninggalkan source dalam detached HEAD -> "(no branch)". Beri nama branch lokal di commit yang sama
+    # (patch yang sudah diterapkan tetap ada di working tree).
+    - name: Set branch name (banner [Branch])
+      run: |
+        REC=${{ steps.pwd.outputs.workspace-folder }}/fox_12.1/bootable/recovery
+        if git -C "$REC" checkout -q -B fox_12.1; then
+          echo "bootable/recovery: branch $(git -C "$REC" branch --show-current) @ $(git -C "$REC" rev-parse --short HEAD)"
+        else
+          echo "::notice::gagal memberi nama branch -- banner tetap menampilkan (no branch)"
+        fi
+
     - name: Disk space check (sebelum build)
       run: |
         echo "== df -h =="
