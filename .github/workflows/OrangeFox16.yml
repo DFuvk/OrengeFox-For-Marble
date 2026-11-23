@@ -52,6 +52,11 @@ on:
         description: 'Release config untuk lunch Android 16 (twrp_marble-<ini>-eng), lihat COMMON_LUNCH_CHOICES device tree'
         required: true
         default: 'bp2a'
+      HAPTIC_FEEDBACK:
+        description: 'Build dengan menu Haptic feedback (patch di patches/bootable_recovery16). Hapus centang = build OrangeFox biasa.'
+        required: true
+        type: boolean
+        default: true
 
 jobs:
   build:
@@ -341,6 +346,40 @@ jobs:
         fi
         echo "== sesudah =="; df -h /
 
+    # Menu "Haptic feedback" untuk fox_16.0: efek per Button/Keyboard/Action, halaman tes Primitive/Compose, dan getaran
+    # saat scroll (compose LOW_TICK seperti build ctapchuk). Patch di patches/bootable_recovery16/ (BEDA dengan patch fox_12.1).
+    # Dipasang setelah dump source supaya dump tetap berisi source asli. Patch yang tidak cocok dilewati (build lanjut).
+    - name: Apply recovery patches (haptic feedback)
+      id: haptic
+      if: ${{ inputs.HAPTIC_FEEDBACK }}
+      run: |
+        REC=${{ steps.pwd.outputs.workspace-folder }}/fox_16.0/bootable/recovery
+        shopt -s nullglob
+        PATCHES=("$GITHUB_WORKSPACE"/patches/bootable_recovery16/*.patch)
+        if [ ${#PATCHES[@]} -eq 0 ]; then
+          echo "::warning::HAPTIC_FEEDBACK dicentang tapi tidak ada patch di patches/bootable_recovery16 -- build tanpa haptic"
+          exit 0
+        fi
+        OK=1
+        for P in "${PATCHES[@]}"; do
+          NAME=$(basename "$P")
+          if git -C "$REC" apply -R --check "$P" 2>/dev/null; then
+            echo "$NAME sudah terpasang -- lewati"
+          elif git -C "$REC" apply --check "$P" 2>/tmp/patch.err; then
+            git -C "$REC" apply "$P"
+            echo "== $NAME diterapkan =="
+            git -C "$REC" apply --stat "$P"
+          else
+            OK=0
+            echo "::warning::$NAME tidak cocok dengan source bootable/recovery fox_16.0 saat ini -- dilewati, build tanpa haptic"
+            cat /tmp/patch.err
+          fi
+        done
+        if [ "$OK" -eq 1 ]; then
+          echo "applied=true" >> "$GITHUB_OUTPUT"
+        fi
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
     # Build Android 16 butuh jauh lebih banyak memori daripada 12.1 (analisis Soong). Runner gratis cuma 16 GB RAM dan
     # zram di runner tidak selalu bisa start, jadi swapfile dibuat sebesar mungkin: sisa disk dikurangi ~30 GB untuk out/,
     # maksimal 40 GB. Run #1: "runner lost communication" (swap 12 GB). Run #2: swap 9 GB + zram 8 GB habis di analisis Soong.
@@ -487,7 +526,7 @@ jobs:
       uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
       with:
         files: ${{ steps.verify.outputs.zip-path }}
-        name: OrangeFox ${{ steps.verify.outputs.fox-version }} - ${{ github.event.inputs.DEVICE_NAME }} (fox_16.0 test)
+        name: OrangeFox ${{ steps.verify.outputs.fox-version }} - ${{ github.event.inputs.DEVICE_NAME }} (fox_16.0 test)${{ steps.haptic.outputs.applied == 'true' && ' (Haptic)' || '' }}
         tag_name: ${{ github.run_id }}
         prerelease: true
         make_latest: false
@@ -501,6 +540,7 @@ jobs:
           **Notes**
           - Based on fox_16.0 (new R12 interface). Test build, not as well tested as the fox_12.1 releases.
           - Uses the open source qcom vibrator HAL from the device tree.
+          - ${{ steps.haptic.outputs.applied == 'true' && 'Adds a Haptic feedback menu (Settings > Haptic feedback): Click, Double click, Tick, Thud, Pop and Heavy click per button, keyboard and action, plus light haptics while scrolling lists.' || 'Standard OrangeFox vibration settings.' }}
           - No kernel included, it uses the one from your current ROM (HyperOS or GKI custom ROMs).
           - This is an unofficial build. Please don't report issues to the OrangeFox team.
 
@@ -511,5 +551,4 @@ jobs:
           Maintained by ${{ github.event.inputs.OF_MAINTAINER }}.
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
         
