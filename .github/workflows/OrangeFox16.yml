@@ -442,6 +442,8 @@ jobs:
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Building recovery
+      # Run sukses ~70-95 menit. Kalau macet, step berhenti di sini (log tetap di-upload) daripada menunggu 4 jam.
+      timeout-minutes: 150
       env:
         IN_MAKEFILE_NAME: ${{ github.event.inputs.MAKEFILE_NAME }}
         IN_BUILD_TARGET: ${{ github.event.inputs.BUILD_TARGET }}
@@ -476,42 +478,56 @@ jobs:
         for P in $(pgrep -f 'Runner.Listener|Runner.Worker' || true); do
           echo -1000 | sudo tee "/proc/$P/oom_score_adj" >/dev/null || true
         done
-        # Kurung build di cgroup memori sendiri. Kalau build butuh RAM lebih, prosesnya sendiri yang diperlambat dan
-        # dipindah ke swap (memory.high), runner di luar cgroup tetap punya RAM untuk kirim heartbeat ke GitHub.
-        # Kalau tetap kehabisan, OOM killer hanya membunuh proses build (memory.max) -> error tertulis di log.
-        # PID shell ini diambil di luar pipeline: $BASHPID di dalam "echo | tee" adalah PID subshell echo, bukan shell build.
-        TOTAL_MB=$(free -m | awk '/^Mem:/{print $2}')
-        HIGH_MB=$(( TOTAL_MB - 3072 )); MAX_MB=$(( TOTAL_MB - 1536 ))
-        SHELL_PID=$$
+        # Monitor RAM/swap/disk tiap 60 detik (tampil di log step ini dan disimpan ke resource-monitor.log).
+        # Dimulai SEBELUM shell build dipindah ke cgroup, jadi monitor tetap jalan walau build tersendat.
         CG=/sys/fs/cgroup/ofox-build
+        MON_LOG=${{ steps.pwd.outputs.workspace-folder }}/resource-monitor.log
+        ( while sleep 60; do
+            BIG=$(ps -eo rss=,comm= --sort=-rss | awk 'NR==1{printf "%s %d MB", $2, $1/1024}')
+            CGM=""
+            if [ -r "$CG/memory.current" ]; then
+              CGM=" | cgroup $(( $(cat "$CG/memory.current") / 1048576 )) MB, tekanan $(awk '/^some/{print $2}' "$CG/memory.pressure" 2>/dev/null)"
+            fi
+            echo "[monitor $(date -u +%H:%M:%S)] $(free -m | awk '/^Mem:/{printf "RAM %d/%d MB", $3, $2} /^Swap:/{printf " | swap %d/%d MB", $3, $2}')${CGM} | terbesar: ${BIG} | disk kosong $(df -h / | awk 'NR==2{print $4}')" | tee -a "$MON_LOG"
+          done ) &
+        MON_PID=$!
+
+        # Pisahkan build dari runner:
+        # - cgroup runner diberi memory.min 1 GB -> RAM runner tidak ikut direbut/di-swap saat soong_build menelan RAM,
+        #   jadi heartbeat ke GitHub tetap jalan (sebelumnya "lost communication").
+        # - build di cgroup sendiri dengan memory.max saja. TANPA memory.high: di run #6 memory.high membuat build
+        #   macet total begitu cgroup penuh cache file compile. Kalau RAM+swap benar-benar habis, OOM killer hanya
+        #   membunuh proses build -> error tertulis di log.
+        # PID diambil di luar pipeline: $BASHPID di dalam "echo | tee" adalah PID subshell echo, bukan shell build.
+        TOTAL_MB=$(free -m | awk '/^Mem:/{print $2}')
+        MAX_MB=$(( TOTAL_MB - 1024 ))
+        SHELL_PID=$$
+        RUNNER_CG=$(awk -F'::' 'NR==1{print $2}' /proc/$SHELL_PID/cgroup 2>/dev/null)
+        echo "cgroup runner: ${RUNNER_CG:-?}"
         CG_ERR=""
-        echo "cgroup shell sekarang: $(cat /proc/$SHELL_PID/cgroup 2>/dev/null)"
         if ! grep -qw memory /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null; then
           CG_ERR="controller memory tidak aktif di /sys/fs/cgroup ($(cat /sys/fs/cgroup/cgroup.subtree_control 2>&1))"
         elif ! sudo mkdir -p "$CG"; then
           CG_ERR="mkdir $CG gagal"
-        elif ! echo "${HIGH_MB}M" | sudo tee "$CG/memory.high" >/dev/null; then
-          CG_ERR="tulis memory.high gagal"
         elif ! echo "${MAX_MB}M" | sudo tee "$CG/memory.max" >/dev/null; then
           CG_ERR="tulis memory.max gagal"
         elif ! echo "$SHELL_PID" | sudo tee "$CG/cgroup.procs" >/dev/null; then
           CG_ERR="pindah PID $SHELL_PID ke $CG gagal"
         fi
         if [ -z "$CG_ERR" ]; then
-          echo "Build dijalankan di cgroup $CG (memory.high ${HIGH_MB}M, memory.max ${MAX_MB}M, swap bebas) -> $(cat /proc/$SHELL_PID/cgroup)"
+          echo "Build dijalankan di cgroup $CG (memory.max ${MAX_MB}M, swap bebas) -> $(cat /proc/$SHELL_PID/cgroup)"
+          # memory.min dipasang di setiap level induk, karena proteksi anak dibatasi oleh proteksi induknya
+          D=/sys/fs/cgroup
+          for PART in $(echo "${RUNNER_CG#/}" | tr '/' ' '); do
+            D="$D/$PART"
+            [ -e "$D/memory.min" ] || continue
+            echo 1G | sudo tee "$D/memory.min" >/dev/null 2>&1 || echo "::notice::memory.min gagal di $D"
+          done
+          echo "proteksi runner: $D memory.min=$(cat "$D/memory.min" 2>/dev/null)"
         else
           echo "::warning::cgroup memori tidak aktif: $CG_ERR -- build jalan tanpa batas memori (runner bisa putus kalau RAM habis)"
           CG=""
         fi
-
-        # Monitor RAM/swap/disk tiap 60 detik (tampil di log step ini dan disimpan ke resource-monitor.log)
-        MON_LOG=${{ steps.pwd.outputs.workspace-folder }}/resource-monitor.log
-        ( while sleep 60; do
-            BIG=$(ps -eo rss=,comm= --sort=-rss | awk 'NR==1{printf "%s %d MB", $2, $1/1024}')
-            CGM=""; [ -n "$CG" ] && CGM=" | cgroup $(( $(cat "$CG/memory.current" 2>/dev/null || echo 0) / 1048576 )) MB"
-            echo "[monitor $(date -u +%H:%M:%S)] $(free -m | awk '/^Mem:/{printf "RAM %d/%d MB", $3, $2} /^Swap:/{printf " | swap %d/%d MB", $3, $2}')${CGM} | terbesar: ${BIG} | disk kosong $(df -h / | awk 'NR==2{print $4}')" | tee -a "$MON_LOG"
-          done ) &
-        MON_PID=$!
 
         mka adbd "${IN_BUILD_TARGET}image" -j$(nproc --all) 2>&1 | tee ${{ steps.pwd.outputs.workspace-folder }}/build.log
         RC=${PIPESTATUS[0]}
@@ -598,5 +614,4 @@ jobs:
           Maintained by ${{ github.event.inputs.OF_MAINTAINER }}.
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
         
