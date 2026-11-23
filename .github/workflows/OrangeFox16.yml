@@ -267,55 +267,6 @@ jobs:
         fi
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
-    # Build Android 16 butuh jauh lebih banyak memori daripada 12.1 (analisis Soong). Runner gratis cuma 16 GB RAM dan
-    # zram di runner tidak selalu bisa start, jadi swapfile dibuat sebesar mungkin: sisa disk dikurangi ~45 GB untuk out/,
-    # maksimal 32 GB. Run #1 fox_16.0 mati dengan "runner lost communication" (kemungkinan RAM habis) memakai swap 12 GB.
-    - name: Set Swap Space (adaptif)
-      run: |
-        FREE_G=$(df --output=avail -BG / | tail -n1 | tr -dc '0-9')
-        SWAP_G=$(( FREE_G - 45 ))
-        if [ "$SWAP_G" -gt 32 ]; then SWAP_G=32; fi
-        echo "Disk kosong: ${FREE_G} GB -> swap ${SWAP_G} GB"
-        if [ "$SWAP_G" -lt 4 ]; then
-          echo "::warning::disk tinggal ${FREE_G} GB -- swapfile tambahan tidak dibuat (build bisa kehabisan RAM/disk)"
-          exit 0
-        fi
-        sudo swapoff -a || true
-        sudo rm -f /swapfile
-        sudo fallocate -l "${SWAP_G}G" /swapfile
-        sudo chmod 600 /swapfile
-        sudo mkswap /swapfile >/dev/null
-        sudo swapon /swapfile
-        swapon --show
-        free -h
-
-    - name: Enable zram swap
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        # zram opsional: kalau modul kernel zram tidak ada (lihat langkah "Prepare the build environment"),
-        # build tetap jalan memakai swapfile dari langkah sebelumnya.
-        if sudo modprobe zram 2>/dev/null; then
-          sudo -E apt-get install -yq zram-tools
-          echo -e 'ALGO=lz4\nPERCENT=50\nPRIORITY=100' | sudo tee /etc/default/zramswap
-          sudo systemctl restart zramswap.service \
-            || echo "::notice::zramswap.service gagal start -- lanjut dengan swapfile saja"
-        else
-          echo "::notice::modul zram tidak tersedia di kernel $(uname -r) -- zram dilewati, pakai swapfile saja"
-        fi
-        echo "== swap layout =="
-        swapon --show
-        free -h
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
-    - name: Disk space check (sebelum build)
-      run: |
-        echo "== df -h =="
-        df -h
-        echo "== 20 folder terbesar di source tree =="
-        du -sh ${{ steps.pwd.outputs.workspace-folder }}/fox_16.0/* 2>/dev/null | sort -rh | head -20
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
     # Info untuk port menu Haptic feedback ke fox_16.0: apakah source publik sudah punya kode haptic/WiFi ctapchuk,
     # dan dump file teks bootable/recovery + vibrator HAL sebagai artifact (tidak ikut release). Tidak memengaruhi build.
     - name: Inspect & dump fox_16.0 recovery source
@@ -360,6 +311,86 @@ jobs:
         if-no-files-found: ignore
         retention-days: 7
 
+    # Setelah sync, objek git di .repo/project-objects tidak dipakai build tapi makan puluhan GB.
+    # Run #2 fox_16.0: disk kosong setelah sync cuma 54 GB -> swap cuma 9 GB -> RAM+swap habis di analisis Soong.
+    # Objek bootable/recovery DISIMPAN: Android.mk & orangefox.mk memakai git untuk hash codebase dan nama branch di banner.
+    # Jalan SETELAH dump source. Kalau ada yang tidak terduga, step ini tidak menghapus apa-apa (build tetap jalan).
+    - name: Free disk (hapus objek git repo sync)
+      run: |
+        TREE=${{ steps.pwd.outputs.workspace-folder }}/fox_16.0
+        PO="$TREE/.repo/project-objects"
+        echo "== sebelum =="; df -h /
+        if [ ! -d "$PO" ]; then echo "::notice::$PO tidak ada -- lewati"; exit 0; fi
+        du -sh "$TREE/.repo" 2>/dev/null || true
+        REV_BEFORE=$(git -C "$TREE/bootable/recovery" rev-parse --short=8 HEAD 2>/dev/null || true)
+        KEEP_OBJ=$(cd "$TREE/bootable/recovery" 2>/dev/null && readlink -f "$(git rev-parse --git-path objects 2>/dev/null)" 2>/dev/null || true)
+        if [ -z "$REV_BEFORE" ] || [ -z "$KEEP_OBJ" ] || [ ! -d "$KEEP_OBJ" ]; then
+          echo "::warning::tidak bisa menentukan objek git bootable/recovery -- tidak ada yang dihapus"; exit 0
+        fi
+        KEEP_DIR=$(dirname "$KEEP_OBJ")
+        echo "disimpan: $KEEP_DIR (bootable/recovery @ $REV_BEFORE)"
+        # hapus setiap <nama>.git di project-objects kecuali milik bootable/recovery
+        find "$PO" -type d -name '*.git' -prune -print | while read -r D; do
+          [ "$(readlink -f "$D")" = "$KEEP_DIR" ] && continue
+          rm -rf "$D"
+        done
+        REV_AFTER=$(git -C "$TREE/bootable/recovery" rev-parse --short=8 HEAD 2>/dev/null || true)
+        echo "git bootable/recovery setelah dibersihkan: ${REV_AFTER:-RUSAK}"
+        if [ "$REV_AFTER" != "$REV_BEFORE" ]; then
+          echo "::warning::git bootable/recovery tidak terbaca lagi -- hash codebase di banner akan kosong (build tetap jalan)"
+        fi
+        echo "== sesudah =="; df -h /
+
+    # Build Android 16 butuh jauh lebih banyak memori daripada 12.1 (analisis Soong). Runner gratis cuma 16 GB RAM dan
+    # zram di runner tidak selalu bisa start, jadi swapfile dibuat sebesar mungkin: sisa disk dikurangi ~30 GB untuk out/,
+    # maksimal 40 GB. Run #1: "runner lost communication" (swap 12 GB). Run #2: swap 9 GB + zram 8 GB habis di analisis Soong.
+    - name: Set Swap Space (adaptif)
+      run: |
+        FREE_G=$(df --output=avail -BG / | tail -n1 | tr -dc '0-9')
+        SWAP_G=$(( FREE_G - 30 ))
+        if [ "$SWAP_G" -gt 40 ]; then SWAP_G=40; fi
+        echo "Disk kosong: ${FREE_G} GB -> swap ${SWAP_G} GB"
+        if [ "$SWAP_G" -lt 4 ]; then
+          echo "::warning::disk tinggal ${FREE_G} GB -- swapfile tambahan tidak dibuat (build bisa kehabisan RAM/disk)"
+          exit 0
+        fi
+        sudo swapoff -a || true
+        sudo rm -f /swapfile
+        sudo fallocate -l "${SWAP_G}G" /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile >/dev/null
+        sudo swapon /swapfile
+        swapon --show
+        free -h
+
+    - name: Enable zram swap
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        # zram opsional: kalau modul kernel zram tidak ada (lihat langkah "Prepare the build environment"),
+        # build tetap jalan memakai swapfile dari langkah sebelumnya.
+        if sudo modprobe zram 2>/dev/null; then
+          sudo -E apt-get install -yq zram-tools
+          # 100% RAM: isi zram dikompres lz4, jadi 16 GB zram cuma makan ~5-8 GB RAM sungguhan
+          echo -e 'ALGO=lz4\nPERCENT=100\nPRIORITY=100' | sudo tee /etc/default/zramswap
+          sudo systemctl restart zramswap.service \
+            || echo "::notice::zramswap.service gagal start -- lanjut dengan swapfile saja"
+        else
+          echo "::notice::modul zram tidak tersedia di kernel $(uname -r) -- zram dilewati, pakai swapfile saja"
+        fi
+        echo "== swap layout =="
+        swapon --show
+        free -h
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Disk space check (sebelum build)
+      run: |
+        echo "== df -h =="
+        df -h
+        echo "== 20 folder terbesar di source tree =="
+        du -sh ${{ steps.pwd.outputs.workspace-folder }}/fox_16.0/* 2>/dev/null | sort -rh | head -20
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
     - name: Building recovery
       env:
         IN_MAKEFILE_NAME: ${{ github.event.inputs.MAKEFILE_NAME }}
@@ -372,6 +403,8 @@ jobs:
         set +e
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
+        # Batas lunak memori untuk garbage collector Go (soong_build). Diabaikan kalau soong_ui tidak meneruskannya.
+        export GOMEMLIMIT=12GiB
         export LC_ALL="C"
         # OF_MAINTAINER dan FOX_MAINTAINER_PATCH_VERSION sudah di-export lewat env: step ini.
         export OF_SCREEN_H=2400
