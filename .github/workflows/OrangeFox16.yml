@@ -465,16 +465,39 @@ jobs:
         for P in $(pgrep -f 'Runner.Listener|Runner.Worker' || true); do
           echo -1000 | sudo tee "/proc/$P/oom_score_adj" >/dev/null || true
         done
+        # Kurung build di cgroup memori sendiri. Kalau build butuh RAM lebih, prosesnya sendiri yang diperlambat dan
+        # dipindah ke swap (memory.high), runner di luar cgroup tetap punya RAM untuk kirim heartbeat ke GitHub.
+        # Kalau tetap kehabisan, OOM killer hanya membunuh proses build (memory.max) -> error tertulis di log.
+        TOTAL_MB=$(free -m | awk '/^Mem:/{print $2}')
+        CG=/sys/fs/cgroup/ofox-build
+        if grep -qw memory /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null && sudo mkdir -p "$CG" \
+           && echo "$(( TOTAL_MB - 3072 ))M" | sudo tee "$CG/memory.high" >/dev/null \
+           && echo "$(( TOTAL_MB - 1536 ))M" | sudo tee "$CG/memory.max" >/dev/null \
+           && echo "$BASHPID" | sudo tee "$CG/cgroup.procs" >/dev/null; then
+          echo "Build dijalankan di cgroup $CG (memory.high $(( TOTAL_MB - 3072 ))M, memory.max $(( TOTAL_MB - 1536 ))M, swap bebas)"
+        else
+          echo "::notice::cgroup memori tidak bisa dibuat -- build jalan tanpa batas memori"
+          CG=""
+        fi
+
         # Monitor RAM/swap/disk tiap 60 detik (tampil di log step ini dan disimpan ke resource-monitor.log)
         MON_LOG=${{ steps.pwd.outputs.workspace-folder }}/resource-monitor.log
         ( while sleep 60; do
-            echo "[monitor $(date -u +%H:%M:%S)] $(free -m | awk '/^Mem:/{printf "RAM %d/%d MB", $3, $2} /^Swap:/{printf " | swap %d/%d MB", $3, $2}') | disk kosong $(df -h / | awk 'NR==2{print $4}')" | tee -a "$MON_LOG"
+            BIG=$(ps -eo rss=,comm= --sort=-rss | awk 'NR==1{printf "%s %d MB", $2, $1/1024}')
+            CGM=""; [ -n "$CG" ] && CGM=" | cgroup $(( $(cat "$CG/memory.current" 2>/dev/null || echo 0) / 1048576 )) MB"
+            echo "[monitor $(date -u +%H:%M:%S)] $(free -m | awk '/^Mem:/{printf "RAM %d/%d MB", $3, $2} /^Swap:/{printf " | swap %d/%d MB", $3, $2}')${CGM} | terbesar: ${BIG} | disk kosong $(df -h / | awk 'NR==2{print $4}')" | tee -a "$MON_LOG"
           done ) &
         MON_PID=$!
 
         mka adbd "${IN_BUILD_TARGET}image" -j$(nproc --all) 2>&1 | tee ${{ steps.pwd.outputs.workspace-folder }}/build.log
         RC=${PIPESTATUS[0]}
         kill "$MON_PID" 2>/dev/null || true
+        if [ -n "$CG" ] && [ -r "$CG/memory.events" ]; then
+          echo "== cgroup memory.events =="; cat "$CG/memory.events"
+          if [ "$RC" -ne 0 ] && grep -qE '^oom_kill [1-9]' "$CG/memory.events"; then
+            echo "::error::Build dihentikan OOM killer (RAM + swap habis). Runner selamat, lihat resource-monitor.log."
+          fi
+        fi
         exit "$RC"
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
