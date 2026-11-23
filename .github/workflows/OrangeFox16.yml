@@ -415,8 +415,19 @@ jobs:
           sudo systemctl restart zramswap.service \
             || echo "::notice::zramswap.service gagal start -- lanjut dengan swapfile saja"
         else
-          echo "::notice::modul zram tidak tersedia di kernel $(uname -r) -- zram dilewati, pakai swapfile saja"
+          echo "::notice::modul zram tidak tersedia di kernel $(uname -r) -- pakai zswap (kompresi swapfile di RAM)"
+          Z=/sys/module/zswap/parameters
+          if [ -w "$Z/enabled" ] || [ -e "$Z/enabled" ]; then
+            for C in lz4 zstd lzo; do echo "$C" | sudo tee "$Z/compressor" >/dev/null 2>&1 && break; done
+            echo 40 | sudo tee "$Z/max_pool_percent" >/dev/null || true
+            echo Y | sudo tee "$Z/enabled" >/dev/null || true
+            echo "zswap: enabled=$(cat $Z/enabled) compressor=$(cat $Z/compressor) max_pool_percent=$(cat $Z/max_pool_percent)"
+          else
+            echo "::warning::zram dan zswap tidak tersedia -- swap murni di disk, build bisa jauh lebih lambat"
+          fi
         fi
+        # Sisakan RAM bebas untuk kernel & runner supaya reclaim tidak macet saat soong_build menelan RAM sangat cepat
+        sudo sysctl -w vm.min_free_kbytes=262144 vm.swappiness=100 || true
         echo "== swap layout =="
         swapon --show
         free -h
@@ -468,15 +479,28 @@ jobs:
         # Kurung build di cgroup memori sendiri. Kalau build butuh RAM lebih, prosesnya sendiri yang diperlambat dan
         # dipindah ke swap (memory.high), runner di luar cgroup tetap punya RAM untuk kirim heartbeat ke GitHub.
         # Kalau tetap kehabisan, OOM killer hanya membunuh proses build (memory.max) -> error tertulis di log.
+        # PID shell ini diambil di luar pipeline: $BASHPID di dalam "echo | tee" adalah PID subshell echo, bukan shell build.
         TOTAL_MB=$(free -m | awk '/^Mem:/{print $2}')
+        HIGH_MB=$(( TOTAL_MB - 3072 )); MAX_MB=$(( TOTAL_MB - 1536 ))
+        SHELL_PID=$$
         CG=/sys/fs/cgroup/ofox-build
-        if grep -qw memory /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null && sudo mkdir -p "$CG" \
-           && echo "$(( TOTAL_MB - 3072 ))M" | sudo tee "$CG/memory.high" >/dev/null \
-           && echo "$(( TOTAL_MB - 1536 ))M" | sudo tee "$CG/memory.max" >/dev/null \
-           && echo "$BASHPID" | sudo tee "$CG/cgroup.procs" >/dev/null; then
-          echo "Build dijalankan di cgroup $CG (memory.high $(( TOTAL_MB - 3072 ))M, memory.max $(( TOTAL_MB - 1536 ))M, swap bebas)"
+        CG_ERR=""
+        echo "cgroup shell sekarang: $(cat /proc/$SHELL_PID/cgroup 2>/dev/null)"
+        if ! grep -qw memory /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null; then
+          CG_ERR="controller memory tidak aktif di /sys/fs/cgroup ($(cat /sys/fs/cgroup/cgroup.subtree_control 2>&1))"
+        elif ! sudo mkdir -p "$CG"; then
+          CG_ERR="mkdir $CG gagal"
+        elif ! echo "${HIGH_MB}M" | sudo tee "$CG/memory.high" >/dev/null; then
+          CG_ERR="tulis memory.high gagal"
+        elif ! echo "${MAX_MB}M" | sudo tee "$CG/memory.max" >/dev/null; then
+          CG_ERR="tulis memory.max gagal"
+        elif ! echo "$SHELL_PID" | sudo tee "$CG/cgroup.procs" >/dev/null; then
+          CG_ERR="pindah PID $SHELL_PID ke $CG gagal"
+        fi
+        if [ -z "$CG_ERR" ]; then
+          echo "Build dijalankan di cgroup $CG (memory.high ${HIGH_MB}M, memory.max ${MAX_MB}M, swap bebas) -> $(cat /proc/$SHELL_PID/cgroup)"
         else
-          echo "::notice::cgroup memori tidak bisa dibuat -- build jalan tanpa batas memori"
+          echo "::warning::cgroup memori tidak aktif: $CG_ERR -- build jalan tanpa batas memori (runner bisa putus kalau RAM habis)"
           CG=""
         fi
 
@@ -574,4 +598,5 @@ jobs:
           Maintained by ${{ github.event.inputs.OF_MAINTAINER }}.
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
         
